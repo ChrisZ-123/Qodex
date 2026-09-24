@@ -1,6 +1,6 @@
 # 项目指南
 
-Qodex `qodex-v0.1.0` 是基于 [Derpyu520/qq-bridge 提交 dea3ce8](https://github.com/Derpyu520/qq-bridge/commit/dea3ce8) 的公开预览 fork。当前受支持的发布路径是 **Windows + SnowLuma OneBot + Codex ChatGPT 登录 + `conversationMode: model`**。源码中保留了一些 DSH 时代的内部模块和脚本，供改造过程参考；这些不是本版安装所需或受支持的后端接口。不要运行旧 `setup-dsh.mjs` 作为 Qodex 安装步骤。
+Qodex `qodex-v0.2.0` 是基于 [Derpyu520/qq-bridge 提交 dea3ce8](https://github.com/Derpyu520/qq-bridge/commit/dea3ce8) 的公开预览 fork。当前受支持的发布路径是 **Windows + SnowLuma OneBot + Codex ChatGPT 登录 + `conversationMode: model`**。源码中保留了一些 DSH 时代的内部模块和脚本，供改造过程参考；这些不是本版安装所需或受支持的后端接口。不要运行旧 `setup-dsh.mjs` 作为 Qodex 安装步骤。
 
 ## 消息路径
 
@@ -40,7 +40,7 @@ QQ 图片可作为当前消息输入。表情学习只会读取本轮实际附�
 | `src/model-chat.js` | 每会话队列、接话/静默、历史、暂停、发送与同轮记忆处理。 |
 | `src/chat-memory.js` | 每会话记忆存取与 30,000 字符限制。 |
 | `src/sticker-collector.js` / `src/sticker-learning.js` / `src/sticker-lib.js` | 表情自动收藏、看图笔记和目录管理。 |
-| `public/model-console.html` | 当前模型对话控制台；控制台展示模型信息，但无图形化模型选择和会话重置。 |
+| `public/model-console.html` | 当前模型对话控制台；支持模型/推理强度选择和当前会话上下文重置。 |
 | `scripts/windows/` | 安装、启动、状态、验证、停止和可选自动启动。 |
 | `config.example.json` | 脱敏配置模板。真实 `config.json`、`state/` 不提交。 |
 

@@ -4,7 +4,7 @@
 
 用 Codex 驱动 QQ 群聊与私聊的本地桥接程序。Qodex 接收 [SnowLuma](https://github.com/SnowLuma/SnowLuma) 的 OneBot 消息，让模型结合各会话的历史和记忆，自己决定接话、保持安静、搜索网页或理解图片。管理员通过本机网页控制台管理访问范围和聊天风格。
 
-**English:** [README.en.md](README.en.md) · **版本：** `qodex-v0.1.0` 预览版 · **平台：** 目前只在 Windows 验证
+**English:** [README.en.md](README.en.md) · **版本：** `qodex-v0.2.0` 预览版 · **平台：** 目前只在 Windows 验证
 
 本项目是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) 的公开 fork，基于上游提交 [`dea3ce8`](https://github.com/Derpyu520/qq-bridge/commit/dea3ce8) 改造。它不是 SnowLuma、QQ 或 OpenAI 的官方产品。上游没有随该提交提供明确的 `LICENSE` 文件；请阅读[来源与许可说明](THIRD_PARTY_NOTICES.md)，不要把本仓库视为已获得通用开源再许可。
 
@@ -26,7 +26,7 @@ flowchart LR
 
 以下截图使用测试数据生成，仅作**界面示意**，不含真实 QQ 会话或账号。
 
-![Qodex 控制台示意](assets/qodex-console.png)
+![Qodex 控制台示意](assets/qodex-console-v020.png)
 
 [查看会话记忆界面](assets/qodex-memory.png)
 
@@ -53,7 +53,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1
 
 升级前先停止 Qodex，备份 `config.json`、`state/` 和你显式指定的外部记忆目录，再运行 `git pull --ff-only`、`npm ci`，最后启动。升级不会替换 Codex 的登录资料。详见[部署指南](docs/DEPLOYMENT.md#升级与备份)。
 
-控制台当前显示模型信息，但**暂不提供图形化模型选择或会话重置**；要更改 `config.json` 的模型或 `consolePort`、`controlPort`，先用旧配置执行 `Stop`，再修改、`Start`、`Verify`；控制端口改变后旧地址不能用于停止旧进程。Codex 使用额度与同一 ChatGPT 账号的其他 Codex 活动共享。
+控制台现已支持**模型与推理强度选择**：读取当前账户可用列表，保存后下一轮生效，无须重启，保留原有速度设置；所有会话共用此选择，处理中的任务未结束时拒绝切换。**重置当前对话上下文**只作用于左侧选中的会话，取消待发送回复，保留历史、人格和长期记忆；下一条消息创建新会话，不重新注入重置前的历史。已发送到 QQ 的消息不会撤回。
+
+修改本机 `consolePort`、`controlPort` 前仍须先用旧配置执行 `Stop`，再修改、`Start`、`Verify`。Codex 使用额度与同一 ChatGPT 账号的其他 Codex 活动共享。
 
 ## 文档与反馈
 

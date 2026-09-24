@@ -32,8 +32,8 @@ export class CodexApiClient {
     await this.rpc.initialize();
     const account=await this.rpc.request('account/read',{});
     if(account.account?.type!=='chatgpt')throw new Error('QQ Codex requires the existing ChatGPT login');
-    const models=await this.rpc.request('model/list',{});
-    const model=models.data.find(m=>m.model===this.config.model);
+    const models=await this.readModelCatalog();
+    const model=models.find(m=>m.model===this.config.model);
     if(!model?.supportedReasoningEfforts.some(e=>e.reasoningEffort===this.config.reasoningEffort))throw new Error('Requested Codex model/effort is unavailable; no fallback permitted');
     const env=Object.fromEntries(Object.entries(process.env).filter(([,v])=>typeof v==='string'));
     this.clients=[];
@@ -47,10 +47,14 @@ export class CodexApiClient {
   }
   save(){fs.mkdirSync(path.join(this.root,'state'),{recursive:true});fs.writeFileSync(path.join(this.root,'state/codex-sessions.json'),JSON.stringify(this.records,null,2));}
   agentCwd(){const dir=path.join(this.root,'state','agents');fs.mkdirSync(dir,{recursive:true});return dir;}
-  async listModels(){
-    await this.ready;
+  async readModelCatalog(){
     const items=[];let cursor;
     do{const page=await this.rpc.request('model/list',{...(cursor?{cursor}:{})});items.push(...page.data);cursor=page.nextCursor;}while(cursor);
+    return items;
+  }
+  async listModels(){
+    await this.ready;
+    const items=await this.readModelCatalog();
     return items.filter(m=>!m.hidden).map(m=>({model:m.model,name:m.displayName||m.model,efforts:m.supportedReasoningEfforts.map(e=>e.reasoningEffort),defaultEffort:m.defaultReasoningEffort}));
   }
   instructions(preset){

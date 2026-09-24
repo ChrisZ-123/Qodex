@@ -70,3 +70,8 @@ console.log('PASS Codex model pinning, owned-session boundary, tool allowlist, q
  assert.deepEqual((await c.listModels()).map(m=>m.model),['first','second']);assert.equal(calls,2);
  console.log('PASS model catalog pagination and hidden-model exclusion');
 }
+{
+ const c=fixture();c.config.conversationMode='model';c.rpc.initialize=async()=>{};
+ c.rpc.request=async(method,params)=>method==='account/read'?{account:{type:'chatgpt'}}:params.cursor?{data:[{model:'gpt-6-luna',supportedReasoningEfforts:[{reasoningEffort:'max'}]}],nextCursor:null}:{data:[],nextCursor:'second'};
+ await c.initialize();console.log('PASS startup validates a selected model beyond the first catalog page');
+}

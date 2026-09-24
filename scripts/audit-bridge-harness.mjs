@@ -34,6 +34,8 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
   const calls = { created: [], archived: [], sent: [], prompts: [], follows: [], cancelled: [] };
   const success = (value) => ({ result: { ok: true, value } });
   const api = {
+    config:{},
+    listModels:async()=>[{model:'gpt-6-luna',name:'GPT-6 Luna',efforts:['high','max'],defaultEffort:'high'},{model:'fixture-model',name:'Fixture',efforts:['low'],defaultEffort:'low'}],
     events: { follow: (id) => calls.follows.push(id) },
     workspace: {
       create: async () => success({ created: false, workspace: { workspaceId: 'fixture-workspace' } }),

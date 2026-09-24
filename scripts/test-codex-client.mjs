@@ -63,3 +63,10 @@ console.log('PASS Codex model pinning, owned-session boundary, tool allowlist, q
  assert.equal(JSON.parse(c.calls[0][1].additionalContext.conversation_context.value).longTermMemory.content,'fixture preference');
  console.log('PASS memory context and structured output forwarded to Codex turn');
 }
+{
+ const c=fixture();let calls=0;
+ const model=(id,hidden=false)=>({model:id,displayName:id,hidden,supportedReasoningEfforts:[{reasoningEffort:'low'}],defaultReasoningEffort:'low'});
+ c.rpc.request=async(method,params)=>{assert.equal(method,'model/list');calls++;return params.cursor?{data:[model('second')],nextCursor:null}:{data:[model('first'),model('hidden',true)],nextCursor:'page2'};};
+ assert.deepEqual((await c.listModels()).map(m=>m.model),['first','second']);assert.equal(calls,2);
+ console.log('PASS model catalog pagination and hidden-model exclusion');
+}

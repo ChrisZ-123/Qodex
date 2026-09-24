@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import {bridgeHarness} from './audit-bridge-harness.mjs';
-const h=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max'},sendDelayMs:0}});
+const h=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max',serviceTier:'priority'},sendDelayMs:0}});
 const server=h.startConsoleServer();
 try{
  if(!server.listening)await new Promise(r=>server.once('listening',r));
@@ -36,6 +38,19 @@ try{
  assert.equal((await (await request('/api/roles/content?name='+encodeURIComponent('猫娘'))).json()).content,'自主思考，句末喵');
  assert.equal((await request('/api/roles/content?name=..%2Fconfig')).status,404);
  assert.equal((await request('/api/chat/pause',{paused:true})).status,200);
+ const models=await(await request('/api/chat/models')).json();assert.equal(models.models.length,2);
+ assert.equal((await request('/api/chat/models',{model:'missing',reasoningEffort:'max'})).status,400);
+ assert.equal((await request('/api/chat/models',{model:'fixture-model',reasoningEffort:'max'})).status,400);
+ assert.equal((await request('/api/chat/models',{model:'fixture-model',reasoningEffort:'low'})).status,409);
+ assert.equal((await request('/api/chat/reset',{key:'group:456'})).status,200);
+ assert.equal((await request('/api/chat/reset',{key:'group:789'})).status,200);
+ assert.equal((await request('/api/chat/models',{model:'fixture-model',reasoningEffort:'low'})).status,200);
+ assert.equal(h.cfg.codex.model,'fixture-model');
+ const saved=JSON.parse(fs.readFileSync(path.join(h.temp,'config.json'),'utf8'));
+ assert.equal(saved.codex.model,'fixture-model');assert.equal(saved.codex.reasoningEffort,'low');assert.equal(saved.codex.serviceTier,'priority');
+ assert.equal((await request('/api/chat/models',{model:'gpt-6-luna',reasoningEffort:'max'},{origin:'https://other.invalid'})).status,403);
+ assert.equal((await request('/api/chat/reset',{key:'group:456'},{origin:'https://other.invalid'})).status,403);
+ assert.equal((await request('/api/chat/reset',{key:'group:999'})).status,400);
  await h.handleIncoming('group',789,event(789,'暂停期间'),h.cfg);assert.equal(h.calls.prompts.length,2);
  console.log('PASS real bridge: multi-group delivery, unauthorized rejection, console auth/CSRF, role editing and pause');
 }finally{server.closeAllConnections();await new Promise(r=>server.close(r));await h.close();}

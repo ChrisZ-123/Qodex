@@ -44,6 +44,15 @@ export class ModelChat {
   append(key,item){const e=this.entry(key);e.messages.push({time:new Date().toISOString(),...item,text:this.redact(String(item.text??''))});this.save(e);}
   list(keys=[]){for(const k of keys)if(this.valid(k))this.entry(k);return [...this.entries.values()].map(e=>({key:e.key,sessionId:e.sessionId,legacySessionId:e.legacySessionId,allowed:this.allowed(e.key),status:this.running.get(e.key)?.status??(this.paused?'paused':'idle'),pending:this.pending.get(e.key)?.length??0,count:e.messages.length,last:e.messages.at(-1)??null}));}
   history(key,before){const e=this.entry(key);const end=before==null?e.messages.length:Math.min(e.messages.length,Math.max(0,Number(before)||0));const start=Math.max(0,end-100);return {key,messages:e.messages.slice(start,end),before:start,total:e.messages.length};}
+  async reset(key){
+    if(!this.valid(key)||!this.entries.has(key))throw new Error('请选择已有会话');
+    const e=this.entry(key),run=this.running.get(key),old=e.sessionId;
+    if(run)run.cancelled=true;
+    this.pending.delete(key);this.running.delete(key);
+    e.sessionId=null;e.contextStart=e.messages.length;
+    this.append(key,{kind:'event',text:'已重置对话上下文，历史和长期记忆保留；从下一条新消息开始'});
+    if(old){try{await this.api.stopSessionWork(old);}catch{this.append(key,{kind:'event',text:'旧模型任务取消未确认，旧回复已隔离，不会发送'});}}
+  }
   async receive(key,message){
     if(!this.allowed(key))return false;
     message.historyIndex=this.entry(key).messages.length;
@@ -59,20 +68,21 @@ export class ModelChat {
     const run={status:'thinking',text:'',sessionId:null};this.running.set(key,run);
     try{
       const e=this.entry(key);const first=!e.sessionId;
-      if(first){const r=await this.api.sessions.create({agentPreset:'qq-chat-v2'});if(!r.result?.ok)throw new Error('创建会话失败');e.sessionId=r.result.value.sessionId;this.save(e);}
+      if(first){const r=await this.api.sessions.create({agentPreset:'qq-chat-v2'});if(!r.result?.ok)throw new Error('创建会话失败');if(run.cancelled||this.running.get(key)!==run){await this.api.stopSessionWork(r.result.value.sessionId);return;}e.sessionId=r.result.value.sessionId;this.save(e);}
       run.sessionId=e.sessionId;
-      if(run.cancelled||this.paused||!this.allowed(key)){this.running.delete(key);void this.drain(key);return;}
-      const context={conversation:key,persona:this.persona(),...(first?{earlierMessages:e.messages.slice(0,batch[0].historyIndex).filter(m=>m.kind==='user'||m.kind==='assistant').slice(-100)}:{})};
+      if(run.cancelled||this.paused||!this.allowed(key)){if(this.running.get(key)===run){this.running.delete(key);void this.drain(key);}return;}
+      const context={conversation:key,persona:this.persona(),...(first?{earlierMessages:e.messages.slice(e.contextStart??0,batch[0].historyIndex).filter(m=>m.kind==='user'||m.kind==='assistant').slice(-100)}:{})};
       if(this.memory){run.memory=this.memory.ensure(key);context.longTermMemory={enabled:run.memory.enabled,content:run.memory.enabled?run.memory.content:''};context.memoryProtocol=MEMORY_GUIDANCE;}
       const {images=[],snapshots=[],learningFailures=0,...expression}=await this.expression();
       run.expression=expression;run.stickerSnapshots=snapshots;context.expression=expression;
       if(learningFailures)this.append(key,{kind:'event',text:`${learningFailures} 张收藏图片读取失败，已跳过看图；可在控制台同步收藏后重试`});
-      if(run.cancelled||this.paused||!this.allowed(key)){this.running.delete(key);void this.drain(key);return;}
+      if(run.cancelled||this.paused||!this.allowed(key)){if(this.running.get(key)===run){this.running.delete(key);void this.drain(key);}return;}
       run.messageIds=new Set(batch.map(m=>m.messageId).filter(id=>typeof id==='string'&&/^-?[1-9]\d*$/.test(id)));
       const content=[{type:'text',text:JSON.stringify({messages:batch.map(({sender,text,time,messageId})=>({sender,text,time,messageId}))})},...batch.flatMap(m=>m.images??[]),...images];
       const result=await this.api.sessions.prompt({sessionId:e.sessionId,content,context,...(this.memory?{outputSchema:MEMORY_OUTPUT_SCHEMA}:{})});
       if(!result.result?.ok)throw new Error('消息提交失败');
     }catch{
+      if(this.running.get(key)!==run)return;
       this.running.delete(key);this.append(key,{kind:'error',text:'模型请求失败，未自动重试。请检查模型登录、网络或后台日志。'});
       // Do not silently replay a failed batch. A later incoming batch may proceed.
       if(this.pending.get(key)?.length)void this.drain(key);
@@ -81,7 +91,7 @@ export class ModelChat {
   owns(sessionId){return [...this.entries.values()].some(e=>e.sessionId===sessionId);}
   async consume(sessionId,event){
     const e=[...this.entries.values()].find(e=>e.sessionId===sessionId);if(!e)return;
-    const run=this.running.get(e.key);if(!run)return;
+    const run=this.running.get(e.key);if(!run||run.sessionId!==sessionId)return;
     if(event.type==='assistant/message')run.text+=(event.data?.message?.content??[]).filter(b=>b.type==='text').map(b=>b.text).join('');
     if(event.type==='web/search'){run.status='searching';this.append(e.key,{kind:'event',text:'正在联网搜索'});}
     if(event.type!=='turn/end')return;
@@ -121,7 +131,7 @@ export class ModelChat {
       if(reply){await this.send(e.key,reply,()=>!run.cancelled,{replyTo});this.append(e.key,{kind:'assistant',sender:'机器人',text:reply});}
       for(const [index,stickerId] of stickerIds.entries()){await this.sendSticker(e.key,stickerId,()=>!run.cancelled,{replyTo:reply||index?null:replyTo});const sticker=run.expression.stickers.find(s=>s.id===stickerId);this.append(e.key,{kind:'assistant',sender:'机器人',text:`[表情包：${sticker.description||stickerId}]`,stickerId});}
     }catch{this.append(e.key,{kind:'error',text:'QQ 发送失败，未自动重发，请检查连接'});}
-    finally{this.running.delete(e.key);void this.drain(e.key);}
+    finally{if(this.running.get(e.key)===run){this.running.delete(e.key);void this.drain(e.key);}}
   }
   async pause(value){
     this.paused=value;

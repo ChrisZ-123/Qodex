@@ -1720,6 +1720,28 @@ async function main() {
           else sendJson({paused:modelChat.paused,conversations:modelChat.list([...(cfg.allow.groups??[]).map(id=>`group:${id}`),...(cfg.allow.private??[]).map(id=>`private:${id}`)])});
           return;
         }
+        if(modelDirected && url.pathname==='/api/chat/models'){
+          try{
+            const models=await api.listModels();
+            if(req.method==='GET'){sendJson({models,current:{model:cfg.codex.model,reasoningEffort:cfg.codex.reasoningEffort,serviceTier:cfg.codex.serviceTier}});return;}
+            if(req.method==='POST'){
+              const body=await readBody(),model=models.find(m=>m.model===body.model);
+              if(!model||!model.efforts.includes(body.reasoningEffort)){sendJson({ok:false,error:'请选择账户可用的模型和推理强度'},400);return;}
+              if(modelChat.running.size){sendJson({ok:false,error:'仍有会话正在处理，请等待完成或暂停接话后再保存'},409);return;}
+              const file=path.join(ROOT,'config.json'),saved=readJsonSafe(file,null);
+              if(!saved)throw new Error('配置不可读');
+              saved.codex={...saved.codex,model:body.model,reasoningEffort:body.reasoningEffort};atomicWriteJson(file,saved);
+              Object.assign(cfg.codex,{model:body.model,reasoningEffort:body.reasoningEffort});
+              Object.assign(api.config,{model:body.model,reasoningEffort:body.reasoningEffort});
+              sendJson({ok:true});return;
+            }
+          }catch{sendJson({ok:false,error:'模型列表获取或设置保存失败，请检查 Codex 连接'},503);return;}
+        }
+        if(modelDirected && req.method==='POST' && url.pathname==='/api/chat/reset'){
+          const body=await readBody();
+          if(!modelChat.valid(body.key)||!modelChat.entries.has(body.key)){sendJson({ok:false,error:'请选择已有会话'},400);return;}
+          await modelChat.reset(body.key);sendJson({ok:true});return;
+        }
         if(modelDirected && url.pathname==='/api/chat/memory'){
           const body=req.method==='POST'?await readBody():null;
           const key=body?.key??url.searchParams.get('key');

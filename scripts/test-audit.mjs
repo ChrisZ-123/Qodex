@@ -12,6 +12,7 @@ const tests = [
   'test-restart-busy.mjs',
   'test-codex-client.mjs',
   'test-model-chat.mjs',
+  'test-chat-reset.mjs',
   'test-model-console.mjs',
   'test-chat-memory.mjs',
   'test-model-expression.mjs',

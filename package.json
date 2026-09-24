@@ -1,6 +1,6 @@
 {
   "name": "qodex",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Codex-powered autonomous QQ conversations with local memory, sticker learning and a Windows management console.",
   "type": "module",

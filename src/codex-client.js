@@ -47,6 +47,12 @@ export class CodexApiClient {
   }
   save(){fs.mkdirSync(path.join(this.root,'state'),{recursive:true});fs.writeFileSync(path.join(this.root,'state/codex-sessions.json'),JSON.stringify(this.records,null,2));}
   agentCwd(){const dir=path.join(this.root,'state','agents');fs.mkdirSync(dir,{recursive:true});return dir;}
+  async listModels(){
+    await this.ready;
+    const items=[];let cursor;
+    do{const page=await this.rpc.request('model/list',{...(cursor?{cursor}:{})});items.push(...page.data);cursor=page.nextCursor;}while(cursor);
+    return items.filter(m=>!m.hidden).map(m=>({model:m.model,name:m.displayName||m.model,efforts:m.supportedReasoningEfforts.map(e=>e.reasoningEffort),defaultEffort:m.defaultReasoningEffort}));
+  }
   instructions(preset){
     if(!['qq-chat','qq-chat-v2'].includes(preset))throw new Error('Unsafe or unknown Codex chat preset');
     if(this.config.conversationMode==='model')return MODEL_CHAT_INSTRUCTIONS;

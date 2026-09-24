@@ -9,6 +9,22 @@ config.json
 *.bak
 *.bak-*
 
+# Qodex local deployment, credentials and generated media
+.env
+.env.*
+!.env.example
+*.dpapi
+*.pem
+*.key
+logs/
+chat-memory/
+runtime/
+downloads/
+SnowLuma/
+test-results/
+.cache/
+*.lnk
+
 # Local development / planning / research docs (not part of public project)
 /PROJECT_GUIDE.md
 /ARCH_REVIEW.md

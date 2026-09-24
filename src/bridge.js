@@ -1,4 +1,4 @@
-// QQ ↔ DeepSeek Harness 桥接主程序。
+// Qodex: QQ conversations powered by Codex (legacy DSH internals retained).
 //
 // 链路：
 //   QQ 消息 → SnowLuma (OneBot v11 WS) → 本进程 → DSH Web API session.prompt
@@ -12,10 +12,15 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
+import { CodexApiClient } from './codex-client.js';
+import { ModelChat, DEFAULT_CHAT_STYLE } from './model-chat.js';
+import { ChatMemory } from './chat-memory.js';
 import { mdToPlain, splitForQQ } from './md-to-plain.js';
 import { SENSITIVE_RE } from './sensitive.js';
 import { looksLikeUnfinished } from './v2-wait.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
+import {prepareStickerLearning,applyVisualNotes} from './sticker-learning.js';
+import {StickerCollector} from './sticker-collector.js';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import {
   loadSlang,
@@ -222,6 +227,9 @@ function loadConfig() {
   const file = readJsonSafe(p, null, true);
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error(`配置格式错误：${p}`);
   const cfg = {
+    backend: file.backend ?? 'dsh',
+    codex: file.codex ?? {},
+    chatMemory: { directory: 'state/chat-memory', ...(file.chatMemory ?? {}) },
     dsh: {
       baseUrl: 'http://127.0.0.1:3080',
       provider: 'deepseek-official',
@@ -236,7 +244,7 @@ function loadConfig() {
       authPrefix: 'Bearer',
       ...(file.dsh ?? {})
     },
-    snowluma: { wsUrl: 'ws://127.0.0.1:3001', accessToken: '', ...(file.snowluma ?? {}) },
+    snowluma: { wsUrl: 'ws://127.0.0.1:3001', ...(file.snowluma ?? {}), accessToken: process.env.QBOT_ONEBOT_TOKEN || file.snowluma?.accessToken || '' },
     // 空 => 每个会话在 state/agents/<key> 下建独立工作目录
     sessionCwd: file.sessionCwd ?? '',
     agentPreset: file.agentPreset ?? 'qq-chat',
@@ -256,7 +264,7 @@ function loadConfig() {
     sendDelayMs: file.sendDelayMs ?? 300,
     questionTimeoutMs: file.questionTimeoutMs ?? 5 * 60 * 1000,
     consolePort: file.consolePort ?? 3100,
-    consoleToken: file.consoleToken ?? '',
+    consoleToken: process.env.QBOT_CONSOLE_TOKEN || file.consoleToken || '',
     security: {
       interceptNotify: true,
       ...(file.security ?? {})
@@ -655,7 +663,7 @@ function extractMediaFromSegments(segments) {
         kind: 'image',
         file: String(d.file ?? ''),
         url: String(d.url ?? ''),
-        subType: d.subType != null ? String(d.subType) : '',
+        subType: d.sub_type != null ? String(d.sub_type) : d.subType != null ? String(d.subType) : '',
         summary: String(d.summary ?? '')
       });
     } else if (seg.type === 'face') {
@@ -825,6 +833,7 @@ async function main() {
         // 真人发表情前通常会有短暂停顿，避免“文字刚发完表情立刻跟上”的机械感。
         await sleep(randInt(800, 2000));
         assertSendAllowed();
+        if(options.assertCurrent)options.assertCurrent();
         const res = await fetch(`${httpUrl}/${action}`, {
           method: 'POST',
           headers: {
@@ -1210,7 +1219,8 @@ async function main() {
   }
 
   // DSH 侧
-  const api = new NodeApiClient(cfg.dsh.baseUrl, undefined, {
+  const modelDirected = cfg.backend === 'codex' && cfg.codex.conversationMode === 'model';
+  const api = cfg.backend === 'codex' ? new CodexApiClient(cfg.codex) : new NodeApiClient(cfg.dsh.baseUrl, undefined, {
     token: cfg.dsh.authToken,
     header: cfg.dsh.authHeader,
     prefix: cfg.dsh.authPrefix
@@ -1528,7 +1538,7 @@ async function main() {
       if (!dshReady) {
         dshReady = true;
         lastMode = currentMode;
-        log(`DSH 已就绪（模式: ${currentMode}）`);
+        log(`${cfg.backend === 'codex' ? 'Codex' : 'DSH'} 已就绪（模式: ${currentMode}）`);
         if (currentMode === 'reserved2') {
           // 首次确定模式为 reserved2 后再恢复持久化的有限睡眠定时器，
           // 避免在 initial chat 模式下设置定时器导致 timeout 唤醒被模式守卫吞掉。
@@ -1563,7 +1573,7 @@ async function main() {
       }
     } else if (dshReady) {
       dshReady = false;
-      log('⚠️ DSH 不可用（重启中？），QQ 消息将入队等待');
+      log(`⚠️ ${cfg.backend === 'codex' ? 'Codex' : 'DSH'} 不可用，QQ 消息将入队等待`);
     }
   };
   function startDshWatch() {
@@ -1672,7 +1682,9 @@ async function main() {
       if (consoleToken && suppliedToken !== consoleToken) {
         if (req.method === 'GET' && url.pathname === '/') {
           res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
-          res.end('<!doctype html><meta charset="utf-8"><title>需要令牌</title><script>const t=prompt(\'请输入控制台访问令牌\');if(t)location.href=\'/?token=\'+encodeURIComponent(t);</script>');
+          res.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Qodex · 控制台登录</title>
+<style>body{font:16px/1.6 "Segoe UI","Microsoft YaHei",sans-serif;background:#f4f6f9;color:#202c3d;margin:0}main{max-width:420px;margin:12vh auto;padding:32px;background:white;border:1px solid #dce3ec;border-radius:12px}h1{margin:0 0 8px}input,button{font:inherit;box-sizing:border-box;width:100%;padding:12px;margin-top:12px;border:1px solid #b6c2d3;border-radius:6px}button{background:#245dcc;color:white;cursor:pointer}small{color:#637186}</style>
+<main><h1>Qodex</h1><p>请输入启动页显示的本机控制台访问令牌。</p><form method="get" action="/"><label for="token">访问令牌</label><input id="token" name="token" type="password" required autocomplete="off" autofocus><button type="submit">打开控制台</button></form><p><small>令牌只用于本机管理。请勿分享令牌或带令牌的地址。</small></p></main></html>`);
         } else {
           sendJson({ ok: false, error: '未授权：请提供控制台访问令牌' }, 401);
         }
@@ -1691,13 +1703,56 @@ async function main() {
         if (origin) {
           let originHost = '';
           try { originHost = new URL(String(origin)).host; } catch {}
-          if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(originHost)) {
+          const boundPort=server.address()?.port ?? port;
+          if (![`127.0.0.1:${boundPort}`, `localhost:${boundPort}`].includes(originHost)) {
             sendJson({ ok: false, error: '跨站请求被拒绝' }, 403);
             return;
           }
         }
       }
       try {
+        if (modelDirected && req.headers['x-agent-token'] !== undefined) {
+          sendJson({ok:false,error:'模型自主模式不开放旧版 MCP 接口'},403); return;
+        }
+        if (modelDirected && req.method === 'GET' && url.pathname === '/api/chat') {
+          const key=url.searchParams.get('key');
+          if(key){if(!modelChat.valid(key)){sendJson({ok:false},400);return;}sendJson(modelChat.history(key,url.searchParams.get('before')));}
+          else sendJson({paused:modelChat.paused,conversations:modelChat.list([...(cfg.allow.groups??[]).map(id=>`group:${id}`),...(cfg.allow.private??[]).map(id=>`private:${id}`)])});
+          return;
+        }
+        if(modelDirected && url.pathname==='/api/chat/memory'){
+          const body=req.method==='POST'?await readBody():null;
+          const key=body?.key??url.searchParams.get('key');
+          if(!modelChat.valid(key)||!modelChat.entries.has(key)){sendJson({ok:false,error:'请先选择已有会话'},400);return;}
+          if(req.method==='GET'){sendJson(modelChat.memory.ensure(key));return;}
+          if(req.method==='POST'){
+            try{sendJson(modelChat.memory.update(key,body));}catch(error){sendJson({ok:false,error:error.message},error.statusCode??400);}return;
+          }
+        }
+        if(modelDirected && url.pathname==='/api/chat/expression'){
+          if(req.method==='GET'){sendJson(readChatExpression());return;}
+          if(req.method==='POST'){
+            const body=await readBody();
+            if(typeof body.style!=='string'||body.style.length>4000||typeof body.stickersEnabled!=='boolean'){sendJson({ok:false,error:'口吻最多 4000 字符，表情开关必须有效'},400);return;}
+            if(body.autoLearnStickers!==undefined&&typeof body.autoLearnStickers!=='boolean'){sendJson({ok:false,error:'看图学习开关必须有效'},400);return;}
+            if(body.autoCollectStickers!==undefined&&typeof body.autoCollectStickers!=='boolean'){sendJson({ok:false,error:'自动收藏开关必须有效'},400);return;}
+            atomicWriteJson(path.join(STATE_DIR,'chat-expression.json'),{style:body.style,stickersEnabled:body.stickersEnabled,autoLearnStickers:body.autoLearnStickers??readChatExpression().autoLearnStickers,autoCollectStickers:body.autoCollectStickers??readChatExpression().autoCollectStickers});sendJson({ok:true});return;
+          }
+        }
+        if (modelDirected && req.method === 'POST' && url.pathname === '/api/chat/pause') {
+          const body=await readBody();if(typeof body.paused!=='boolean'){sendJson({ok:false},400);return;}
+          await modelChat.pause(body.paused);sendJson({ok:true,paused:modelChat.paused});return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/roles/content') {
+          const name=url.searchParams.get('name')??'';
+          if(!name||sanitizeRoleName(name)!==name||!listRoles().includes(name)){sendJson({ok:false,error:'角色不存在'},404);return;}
+          sendJson({name,content:fs.readFileSync(path.join(ROOT,'roles',name+'.md'),'utf8')});return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/roles/content') {
+          const body=await readBody();const name=String(body.name??'');
+          if(!name||sanitizeRoleName(name)!==name||!listRoles().includes(name)||typeof body.content!=='string'||!body.content.trim()||body.content.length>30000){sendJson({ok:false,error:'角色名或内容无效（最多 30000 字）'},400);return;}
+          atomicWriteText(path.join(ROOT,'roles',name+'.md'),body.content);sendJson({ok:true});return;
+        }
         // 空 agent token 一律拒绝，防止 MCP 传入空字符串时被当作“管理端/无 token”绕过校验
         if (req.headers['x-agent-token'] === '') {
           sendJson({ ok: false, error: 'agent token 不能为空' }, 403);
@@ -1732,7 +1787,7 @@ async function main() {
         if (req.method === 'GET' && url.pathname === '/') {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
           try {
-            res.end(fs.readFileSync(path.join(ROOT, 'public', 'console.html'), 'utf8'));
+            res.end(fs.readFileSync(path.join(ROOT, 'public', modelDirected ? 'model-console.html' : 'console.html'), 'utf8'));
           } catch {
             res.end('控制台页面缺失：qq-bridge/public/console.html');
           }
@@ -1741,7 +1796,13 @@ async function main() {
         if (req.method === 'GET' && url.pathname === '/api/status') {
           const rs = readRoleState();
           sendJson({
-            mode: currentMode,
+            backend: cfg.backend,
+            conversationMode: modelDirected ? 'model' : currentMode,
+            webSearch: modelDirected ? 'live' : null,
+            serviceTier: cfg.backend === 'codex' ? (cfg.codex.serviceTier ?? 'default') : 'default',
+            model: cfg.backend === 'codex' ? cfg.codex.model : cfg.dsh.model,
+            reasoningEffort: cfg.backend === 'codex' ? cfg.codex.reasoningEffort : cfg.dsh.reasoningEffort,
+            mode: modelDirected ? 'model' : currentMode,
             closedAgentPreset,
             role: rs.role ?? null,
             roleMode: rs.mode ?? 'active',
@@ -1763,8 +1824,21 @@ async function main() {
           sendJson({ presets });
           return;
         }
+        if (req.method === 'POST' && url.pathname === '/api/backend/stop') {
+          if (req.headers['x-agent-token']) { sendJson({ok:false},403); return; }
+          socialV2.paused = true;
+          if(modelDirected)await modelChat.pause(true);
+          for (const id of [...Object.values(state.sessions), ...learnerSessions]) await api.stopSessionWork(id);
+          sendJson({ok:true});
+          return;
+        }
         if (req.method === 'POST' && url.pathname === '/api/mode') {
+          if(modelDirected){sendJson({ok:false,error:'当前使用模型自主对话'},409);return;}
           const body = await readBody();
+          if (cfg.backend === 'codex' && body.mode === 'closed-agent') {
+            sendJson({ ok: false, error: 'Codex 群聊部署不开放电脑操作模式' }, 403);
+            return;
+          }
           if (!['chat', 'closed-agent', 'reserved', 'reserved2'].includes(body.mode)) {
             sendJson({ ok: false, error: 'mode 必须是 chat / closed-agent / reserved / reserved2' }, 400);
             return;
@@ -2149,6 +2223,10 @@ async function main() {
         }
         if (req.method === 'POST' && url.pathname === '/api/whitelist') {
           const body = await readBody();
+          for(const section of ['allow','deny'])for(const kind of ['groups','private']){
+            const list=body[section]?.[kind];
+            if(list!==undefined&&(!Array.isArray(list)||list.some(id=>!/^\d+$/.test(String(id))||!Number.isSafeInteger(Number(id))||Number(id)<=0))){sendJson({ok:false,error:'群号和 QQ 号必须是正整数列表'},400);return;}
+          }
           const toNum = (arr) => Array.isArray(arr) ? [...new Set(arr.map((x) => Number(String(x).trim())).filter((n) => Number.isFinite(n)))] : undefined;
           const configFile = path.join(ROOT, 'config.json');
           // fail-fast：配置文件损坏时直接 500，绝不回写，避免把整个配置清成只剩 allow/deny/ownerQQ
@@ -2205,6 +2283,10 @@ async function main() {
         }
         // ── 控制台访问令牌（可手动修改/生成随机） ─────────────────────────────
         if (req.method === 'POST' && url.pathname === '/api/console/token') {
+          if (process.env.QBOT_CONSOLE_TOKEN) {
+            sendJson({ ok: false, error: '本机令牌由加密凭据存储管理，不能写入普通配置。' }, 409);
+            return;
+          }
           const body = await readBody();
           let newToken = String(body.token ?? '').trim();
           const generated = !newToken;
@@ -3609,6 +3691,8 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/stickers/sync') {
           try {
             const synced = await syncStickerLibrary(true);
+            if(!synced){sendJson({ok:false,error:'QQ 收藏同步失败，请检查 QQ 连接'},502);return;}
+            stickerEntries=stickerEntries.map(s=>({...s,learningError:''}));saveStickerStoreSafe();
             sendJson({ ok: true, total: synced?.entries?.length ?? stickerEntries.length, syncedAt: synced?.syncedAt ?? stickerSyncedAt });
           } catch (error) {
             sendJson({ ok: false, error: `同步表情失败：${error?.message ?? error}` }, 500);
@@ -4625,6 +4709,22 @@ async function main() {
     return sendChain;
   }
 
+  // Native chat sends exactly the model's final text. Surface failures to the
+  // transcript; do not mark failed QQ requests as successfully delivered.
+  async function sendModelReply(key, msg, stillCurrent, options={}) {
+    const [kind,id]=key.split(':');
+    for(const part of splitForQQ(redactKnownTokensOnly(msg))){
+      const job=sendChain.then(async()=>{
+        if(!stillCurrent()||modelChat.paused||!isSessionAllowedInCurrentMode(key))throw new Error('会话已暂停或不在白名单');
+        const message=options.replyTo?[{type:'reply',data:{id:options.replyTo}},{type:'text',data:{text:escapeCqText(part)}}]:text(escapeCqText(part));
+        if(kind==='group')await withTimeout(bot.sendGroupMessage(Number(id),message),SEND_TIMEOUT_MS,'QQ 群发送');
+        else await withTimeout(bot.sendPrivateMessage(Number(id),message),SEND_TIMEOUT_MS,'QQ 私聊发送');
+      });
+      sendChain=job.catch(()=>{}).then(()=>sleep(cfg.sendDelayMs));
+      await job;
+    }
+  }
+
   // ── 真人式分条发送 ──────────────────────────────────────────────────────
   function singleLineForQQ(s) {
     return String(s ?? '')
@@ -5275,9 +5375,9 @@ async function main() {
   const modelAppliedSessions = new Set();
   async function ensureChatModel(sessionId) {
     if (modelAppliedSessions.has(sessionId)) return;
-    const provider = String(cfg.dsh?.provider || 'deepseek-official');
-    const model = String(cfg.dsh?.model || 'deepseek-flash');
-    const effort = String(cfg.dsh?.reasoningEffort || 'max');
+    const provider = cfg.backend === 'codex' ? 'codex' : String(cfg.dsh?.provider || 'deepseek-official');
+    const model = String((cfg.backend === 'codex' ? cfg.codex?.model : cfg.dsh?.model) || 'deepseek-flash');
+    const effort = String((cfg.backend === 'codex' ? cfg.codex?.reasoningEffort : cfg.dsh?.reasoningEffort) || 'max');
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         const result = unwrap(await api.sessions.selectModel({ sessionId, provider, model, reasoningEffort: effort }), 'session.selectModel');
@@ -5886,7 +5986,54 @@ async function main() {
 
   loadSocialV2State();
 
+  function readChatExpression(){return {style:DEFAULT_CHAT_STYLE,stickersEnabled:true,autoLearnStickers:true,autoCollectStickers:true,...readJsonSafe(path.join(STATE_DIR,'chat-expression.json'),{})};}
+
+  const modelChat = modelDirected ? new ModelChat({
+    dir:path.join(STATE_DIR,'model-chat'), api,
+    memory:new ChatMemory(path.resolve(ROOT,cfg.chatMemory.directory)),
+    expression:async()=>{
+      const settings=readChatExpression();
+      let learning={images:[],snapshots:[],failures:[]};
+      if(settings.stickersEnabled&&settings.autoLearnStickers){
+        learning=await prepareStickerLearning(stickerEntries,async entry=>{
+          const {buffer}=await safeFetchBuffer(entry.url,MAX_MEDIA_BYTES);
+          const dims=getImageDimensions(buffer);
+          if(dims&&dims.width*dims.height>MAX_MEDIA_PIXELS)throw new Error('收藏图片像素超限');
+          return {type:'image',data:buffer.toString('base64'),mediaType:mimeFromBuffer(buffer)};
+        });
+        if(learning.failures.length){const update=applyVisualNotes(stickerEntries,[],[],learning.failures);saveStickerStore(STICKER_FILE,update.entries);stickerEntries=update.entries;}
+      }
+      return {style:settings.style,stickers:settings.stickersEnabled?stickerEntries.slice(0,100).map(s=>({id:s.id,description:[s.desc,s.localNote,s.usage].filter(Boolean).join('；'),tags:s.tags})):[],learningIds:learning.snapshots.map(s=>s.id),images:learning.images,snapshots:learning.snapshots,learningFailures:learning.failures.length};
+    },
+    learnStickers:(snapshots,notes)=>{
+      const settings=readChatExpression();if(!settings.stickersEnabled||!settings.autoLearnStickers)return 0;
+      const update=applyVisualNotes(stickerEntries,snapshots,notes.map(n=>({...n,note:typeof n?.note==='string'?redactKnownTokensOnly(n.note):n?.note})));
+      if(update.learned){saveStickerStore(STICKER_FILE,update.entries);stickerEntries=update.entries;}
+      return update.learned;
+    },
+    sendSticker:async(key,id,stillCurrent,options)=>sendStickerV2(key,id,{replyToMessageId:options.replyTo,assertCurrent:()=>{if(!stillCurrent()||modelChat.paused||!readChatExpression().stickersEnabled||!isSessionAllowedInCurrentMode(key))throw new Error('表情发送已取消或权限已变化');}}),
+    allowed:isSessionAllowedInCurrentMode, send:sendModelReply,
+    persona:()=>({name:readRoleState().role,content:currentRoleHint(),botName:selfNickname,adminQQ:String(cfg.ownerQQ??'')}),
+    redact:redactKnownTokensOnly,
+    legacy:{...readJsonSafe(path.join(STATE_DIR,'social-v2.json'),{}),sessions:state.sessions}
+  }) : null;
+
+  const stickerCollector = modelDirected ? new StickerCollector({
+    enabled:()=>readChatExpression().autoCollectStickers&&!modelChat.paused,
+    allowed:isSessionAllowedInCurrentMode,count:()=>stickerEntries.length,
+    download:fetchOneBotImage,
+    add:async buffer=>{
+      const response=await bot.request('add_custom_face',{file:'base64://'+buffer.toString('base64')});
+      if(response?.status!=='ok'||response.retcode!==0)throw new Error('QQ 拒绝收藏表情');
+      return String(response.data?.emoji_id||'');
+    },
+    sync:()=>syncStickerLibrary(true),
+    seen:readJsonSafe(path.join(STATE_DIR,'sticker-collection-attempts.json'),[]),
+    save:items=>atomicWriteJson(path.join(STATE_DIR,'sticker-collection-attempts.json'),items)
+  }) : null;
+
   function isSocialEnabled() {
+    if(modelDirected)return false;
     return currentMode === 'reserved' && cfg.social?.enabled !== false;
   }
 
@@ -6382,7 +6529,7 @@ async function main() {
       const cacheKey = `${stateStat.mtimeMs}:${roleStat.mtimeMs}`;
       if (roleHintCache.key === cacheKey) return roleHintCache.hint;
       let hint = fs.readFileSync(roleFile, 'utf8');
-      if (hint.length > 6000) hint = hint.slice(0, 6000);
+      if (!modelDirected && hint.length > 6000) hint = hint.slice(0, 6000);
       roleHintCache = { key: cacheKey, hint };
       return hint;
     } catch {
@@ -7024,6 +7171,7 @@ async function main() {
   }
 
   async function sendWakePromptV2(key, reason) {
+    if(modelDirected)return;
     if (cfg.socialV2?.enabled === false) return;
     if (currentMode !== 'reserved2' || socialV2.paused) return;
     if (!isSessionAllowedInCurrentMode(key)) {
@@ -7128,6 +7276,7 @@ async function main() {
   }
 
   function scheduleReplyCheckV2(key) {
+    if(modelDirected)return;
     if (cfg.socialV2?.enabled === false) return;
     if (socialV2.paused || currentMode !== 'reserved2') return;
     const st = getSocialV2State(key);
@@ -7177,6 +7326,7 @@ async function main() {
   }
 
   function scheduleWakeV2(key, reason) {
+    if(modelDirected)return;
     if (cfg.socialV2?.enabled === false) return;
     if (socialV2.paused) return;
     if (!isSessionAllowedInCurrentMode(key)) {
@@ -7221,6 +7371,7 @@ async function main() {
   }
 
   function setupSleepTimerV2(key) {
+    if(modelDirected)return;
     if (cfg.socialV2?.enabled === false) return;
     if (!isSessionAllowedInCurrentMode(key)) return;
     const st = getSocialV2State(key);
@@ -7266,6 +7417,7 @@ async function main() {
   }
 
   function scheduleProactiveCheckV2(key) {
+    if(modelDirected)return;
     if (cfg.socialV2?.proactive?.enabled === false) return;
     if (socialV2.paused || currentMode !== 'reserved2') return;
     if (!isSessionAllowedInCurrentMode(key)) return;
@@ -7364,6 +7516,17 @@ async function main() {
     const textContent = await segmentsToText(event.message ?? [], { resolveAtName, resolveReply });
     const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
     const mediaList = extractMediaFromSegments(event.message ?? []);
+    if(modelDirected){
+      try{for(const status of await stickerCollector.collect(key,event,mediaList))modelChat.append(key,{kind:'event',text:status});}
+      catch{modelChat.append(key,{kind:'event',text:'无法记录表情收藏状态，本条未自动收藏'});}
+      await modelChat.receive(key,{
+        sender:`${String(event.sender?.card||event.sender?.nickname||'群友')} (${event.user_id})`,
+        messageId:String(event.message_id??''),
+        text:textContent||'[图片或附件]',time:new Date().toISOString(),
+        images:await resolveMediaList(mediaList)
+      });
+      return;
+    }
     const messageRef = String(event.message_id ?? event.msg_id ?? event.message_seq ?? '');
     const seqRef = event.message_seq != null ? String(event.message_seq) : '';
     const refsToStore = [...new Set([messageRef, seqRef].filter(Boolean))];
@@ -7760,6 +7923,7 @@ async function main() {
 
   // 二代拍一拍（notify/poke）事件处理：写入消息流并按需唤醒。
   async function handlePokeNotice(event) {
+    if(modelDirected)return;
     if (!event || event.sub_type !== 'poke') return;
     const selfId = event.self_id;
     const groupId = event.group_id ?? event.groupId ?? null;
@@ -7843,10 +8007,14 @@ async function main() {
   async function pumpMux() {
     for (;;) {
       try {
-        log('连接 DSH 事件流…');
+        log(`连接 ${cfg.backend === 'codex' ? 'Codex' : 'DSH'} 事件流…`);
         for await (const envelope of api.events.mux({})) {
           const frame = envelope.payload;
           if (frame.type === 'session/event') {
+            if(modelDirected){
+              if(modelChat.owns(frame.sessionId))await modelChat.consume(frame.sessionId,frame.event);
+              continue;
+            }
             const key = reverse.get(frame.sessionId);
             if (!key) {
               // 黑话学习会话：只收集 turn，不发送 QQ，并唤醒等待中的学习任务。
@@ -7930,9 +8098,16 @@ async function main() {
                 }
               }
             }
-            const collector = collectors.get(frame.sessionId) ?? createTurnCollector();
-            collectors.set(frame.sessionId, collector);
-            const ended = collector.push(frame.event);
+            // Session metadata (including model/selection after restart) is not
+            // a running turn. Creating an empty collector here would make
+            // isConversationBusyV2 block all later wakes with no turn/end to
+            // release it. An unmatched end after reconnect must not create one.
+            let collector = collectors.get(frame.sessionId);
+            if (!collector && frame.event.type === 'turn/start') {
+              collector = createTurnCollector();
+              collectors.set(frame.sessionId, collector);
+            }
+            const ended = collector?.push(frame.event);
             if (ended) {
               // reserved2 无行动兜底：普通唤醒回合若既没发消息、也没 mark_read / set_wake_config，
               // 则累计 noActionCount；达到阈值后自动重置 WakeConfig，避免 AI 卡死。

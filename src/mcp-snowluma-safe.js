@@ -48,7 +48,7 @@ function getOneBotConfig() {
   const c = getConfig();
   return {
     httpUrl: (c.snowluma?.httpUrl ?? 'http://127.0.0.1:3000').replace(/\/+$/, ''),
-    token: c.snowluma?.accessToken ?? ''
+    token: process.env.QBOT_ONEBOT_TOKEN || c.snowluma?.accessToken || ''
   };
 }
 
@@ -122,6 +122,7 @@ function agentApiBase() {
   return `http://127.0.0.1:${port}`;
 }
 function readConsoleToken() {
+  if (process.env.QBOT_CONSOLE_TOKEN) return process.env.QBOT_CONSOLE_TOKEN;
   // 每次请求都重新读取，优先 config.json 里的 consoleToken，其次 state/console-token，
   // 避免 token 变化后 MCP 仍使用启动时缓存的旧值导致一直 401。
   try {

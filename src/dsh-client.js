@@ -16,6 +16,7 @@ import { AbstractApiClient } from '@deepseek-ai/dsh-host-apiproxy/client';
 
 /** 从 DSH guard 日志里自动发现最新的进程启动 token（新版 DSH 打印在 dsh web URL 上）。 */
 export function discoverDshLaunchToken() {
+  if (process.env.QBOT_DSH_TOKEN) return process.env.QBOT_DSH_TOKEN;
   try {
     const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
     const logsDir = path.join(home, 'guard', 'logs');

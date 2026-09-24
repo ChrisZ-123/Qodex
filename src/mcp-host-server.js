@@ -38,7 +38,7 @@ function getHostConfig() {
   return {
     httpUrl,
     httpPort: new URL(httpUrl).port || '80',
-    token: c.snowluma?.accessToken ?? '',
+    token: process.env.QBOT_ONEBOT_TOKEN || c.snowluma?.accessToken || '',
     launcher,
     homeDir: c.snowluma?.homeDir ?? (launcher ? path.dirname(launcher) : ''),
     // 进程控制默认关闭：只有 config.json 显式设置 snowluma.allowProcessControl=true 才允许启停
@@ -56,6 +56,7 @@ function getConsolePort() {
 }
 
 function readConsoleToken() {
+  if (process.env.QBOT_CONSOLE_TOKEN) return process.env.QBOT_CONSOLE_TOKEN;
   try {
     const c = getConfig();
     if (c.consoleToken) return String(c.consoleToken);

@@ -1,137 +1,50 @@
-# QQ ↔ DeepSeek Harness Bridge (qq-bridge)
+# Qodex
 
-> Connect QQ messages to DeepSeek Harness (DSH) agents: QQ friends/groups become DSH conversations, and agent replies (including questions and tool approvals) are sent back to QQ.
+Qodex is a local Windows bridge that connects QQ group and private messages through SnowLuma to Codex. For each allowed conversation, the model decides whether to reply, stay silent, search the web, or interpret an image. Administrators manage access, style, memory, stickers, and history in a local web console.
 
-> ⚠️ **Current release `v0.1.5`, targets DSH 0.1.5-rc.1** (verified item by item on that version). It uses Cookie auth, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.0) instead.
->
-> The default branch `main` **is** this version — a plain `git clone` gets it, no branch switching needed.
+**中文说明:** [README.md](README.md) · **Preview:** `qodex-v0.1.0` · **Validated platform:** Windows only
 
-For the detailed Chinese guide, see **[docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md)**.
+This is a public fork of [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) based on upstream commit [`dea3ce8`](https://github.com/Derpyu520/qq-bridge/commit/dea3ce8). It is not an official SnowLuma, QQ, or OpenAI product. The upstream revision has no explicit `LICENSE` file; see [third-party notices](THIRD_PARTY_NOTICES.md) before assuming redistribution rights.
 
-## Architecture
-
-```
-QQ messages ──► SnowLuma (OneBot v11 WS) ──► qq-bridge ──► DSH Web API (127.0.0.1:3080/api)
-                                                    ▲                      │
-                                                    └── agent replies / questions / approvals ┘
-```
-
-- **QQ side**: `@snowluma/sdk` provides the OneBot v11 WebSocket client.
-- **DSH side**: adapted for DSH 0.1.2+ and re-verified on 0.1.5 — launch-token Cookie auth, `/api/<namespace>/<method>` slash RPC, and `/api/remote.mux` + `session/follow` event stream. The per-session model is pinned by the bridge via `session.selectModel` from `config.json`'s `dsh.model` (default `deepseek-flash` = DeepSeek-V41-Flash, multimodal).
-- **Agent tools**: safe MCP servers expose a restricted QQ toolset (`qq_status`, `qq_list_groups`, `qq_get_group_history`, `qq_send_group_message`, `qq_reply`, etc.).
-- **Console**: a local web console at `http://127.0.0.1:3100` for mode switching, role management, whitelist/admin settings, slang management, memory, stickers and more.
-
-## Features
-
-- Bridges QQ group/private messages to DSH agent sessions.
-- Social simulation mode ("simulated group friend") with idle/active/probing/exiting states.
-- Space-based message splitting for more natural multi-message replies.
-- Whitelist/blacklist access control, fail-closed by default.
-- Sensitive text audit prevents paths/credentials from being sent to QQ.
-- MCP tools for reading group history/members, sending messages, replying with quotes, and (in `reserved2`) full simulated-group-friend tooling.
-- Slang/network-expression learning with human confirmation.
-- Lightweight memory system for active topics, pending thoughts and member impressions.
-- Sticker library integration with AI-friendly sticker usage.
-
-## Requirements
-
-- Node.js >= 22.13
-- Running DeepSeek Harness Web (default `http://127.0.0.1:3080`)
-- Running SnowLuma with OneBot v11 WebSocket and HTTP API enabled
-
-## Quick Start
-
-```bash
-npm install        # postinstall automatically patches the @snowluma/sdk ESM packaging bug
+```mermaid
+flowchart LR
+    QQ[QQ groups and private chats] <--> SL[SnowLuma<br/>OneBot HTTP + WebSocket]
+    SL <--> QB[Qodex bridge]
+    QB <--> CX[Local Codex CLI<br/>ChatGPT account]
+    QB <--> UI[Local management console]
+    QB <--> ST[Local history, memory, stickers]
 ```
 
-Copy `config.example.json` to `config.json`, then edit:
+## Highlights
 
-```bash
-cp config.example.json config.json
+- One independent Codex conversation and local memory per QQ group or private chat. Memory is capped at 30,000 characters per conversation and updated during the same model turn. There is no second memory model, and Qodex does not use chat data for training.
+- A shared administrator-selected persona, expression style, and sticker library. The model may send up to two saved stickers per reply and inspect up to two previously unannotated sticker images per turn. Automatic collection is limited to OneBot images explicitly marked as stickers in allowed groups, stops adding at 100, and excludes ordinary photos and private images.
+- Local console for access lists, administrator, persona, expression, pause, conversation history, memory, and sticker notes. Paused messages remain in local history and are not submitted to the model; resuming starts with new messages.
+- Native Codex web search and image input. Model replies and searches are decisions, not guarantees. Closing the browser console does not stop the bridge.
+
+These console screenshots use fixture data, not real QQ conversations.
+
+![Qodex console preview](assets/qodex-console.png)
+
+[View the memory panel](assets/qodex-memory.png).
+
+## Install on Windows
+
+Install [Git for Windows](https://git-scm.com/download/win), Node.js 24 or newer, the official [Codex CLI](https://developers.openai.com/codex/cli), and [SnowLuma](https://github.com/SnowLuma/SnowLuma/releases/latest) separately. Sign in to Codex with a **ChatGPT account** and sign in to QQ through SnowLuma yourself. API-key-only Codex authentication is unsupported. Qodex neither bundles these executables nor accepts their terms for you.
+
+```powershell
+git clone https://github.com/ChrisZ-123/Qodex.git
+cd Qodex
+npm ci
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1
 ```
 
-Key settings:
+In SnowLuma, enable the loopback OneBot HTTP API (default `127.0.0.1:3000`) and WebSocket server (default `127.0.0.1:3001`). The wizard asks for endpoints, Codex executable, optional SnowLuma launcher, administrator, allow lists, and model settings. Enter the OneBot token in its secure prompt; it is stored using Windows DPAPI rather than in the public JSON template. If only an unsupported `.cmd` wrapper is detected, select the native Codex executable. The Windows wizard requires literal `127.0.0.1` with explicit, distinct ports for OneBot HTTP, WebSocket, SnowLuma WebUI, the console, and the control service; `localhost` and IPv6 addresses are not accepted. Existing configuration is validated on a later wizard run and is not overwritten by default.
 
-| Field | Description |
-| --- | --- |
-| `dsh.baseUrl` | DSH Web API URL, default `http://127.0.0.1:3080` |
-| `dsh.authToken` | DSH launch token used to exchange for a browser-session cookie in DSH 0.1.2. Leave empty to auto-discover from `~/.dsh/guard/logs/server-*.out.log`; the bridge also re-discovers it automatically after a DSH restart / 401 |
-| `dsh.authHeader` / `dsh.authPrefix` | Legacy fields kept for compatibility; the current DSH 0.1.2 path uses Cookie exchange and does not send this header |
-| `snowluma.wsUrl` | SnowLuma OneBot **WebSocket** URL (e.g. `ws://127.0.0.1:3001`) |
-| `snowluma.accessToken` | OneBot access token, leave empty if not configured |
-| `snowluma.httpUrl` | OneBot **HTTP API** URL (e.g. `http://127.0.0.1:3000`); do not point this at the WebSocket port or you will get HTTP 426 |
-| `ownerQQ` | Administrator QQ (highest privilege) |
-| `allow.private` / `allow.groups` | Whitelist of QQ/group IDs |
-| `consolePort` | Local console port, default `3100` |
+Double-click `Qodex.bat` to open the Windows launcher, then click Start and Open Console. The local console and control interface default to ports `3100` and `3110`. Empty allow lists deny messages by default. The console currently displays the model but has no graphical model selector or conversation reset.
 
-Start:
+The suggested model is `gpt-6-luna` with `max` effort and default speed; optional `priority` may affect your shared Codex quota. Qodex checks availability and does not automatically fall back. Node 24.18.1, `codex-cli 0.155.0-alpha.16`, and SnowLuma 1.14.17 were present in an existing local deployment; compatibility of a fresh machine or other versions has not been established.
 
-```bash
-npm start
-```
+For daily operations, use `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Control.ps1 -Action Status` (or `Start`, `Stop`, `Verify`, `OpenConsole`, `OpenSnowLuma`, `EnableAutoStart`, `DisableAutoStart`). `npm start`, `npm stop`, `npm run status`, and `npm run setup` call the same Windows scripts and preserve DPAPI token handling. To change the model, console port, or control port, Stop with the old configuration first, then edit, Start, and Verify. Sleep and loss of network stop live replies. To update, stop the bridge; back up `config.json`, `state/`, and any explicitly configured external memory directory; run `git pull --ff-only` and `npm ci`; then restart. Codex authentication is kept in the separate official credential store.
 
-Or double-click `start.bat` on Windows (guard mode with auto-restart).
-
-## DSH Setup on Another Device
-
-The bridge and console can run without extra DSH setup, but the two DSH chat presets (`qq-chat` and `qq-chat-v2`) and the MCP servers must be installed into DSH once per machine:
-
-```bash
-node scripts/setup-dsh.mjs
-```
-
-This installs:
-
-- `~/.dsh/.agent-presets/qq-chat` and `~/.dsh/.agent-presets/qq-chat-v2`
-- MCP entries in `~/.dsh/profiles/web/cordis.patch.yml`
-- `qq-mode-console` in the profile `package.json`
-- Default DSH mode set to `reserved2` (second-generation simulation), with a local `state/mode.json` fallback
-
-Then restart DSH. See [docs/DSH_SETUP.md](docs/DSH_SETUP.md) for details.
-
-## Security Notes
-
-- `config.json` and `state/` are **never committed**; the repository only ships `config.example.json`.
-- MCP send tools enforce whitelist checks and reject CQ-code injection.
-- Local paths, credentials, tokens and other sensitive patterns are filtered by the audit layer.
-- Process control for SnowLuma (`start_snowluma` / `stop_snowluma`) is disabled by default and only allowed in `closed-agent` mode when explicitly enabled.
-- The console uses a generated token when none is configured.
-
-## Repository Layout
-
-```
-qq-bridge/
-  config.example.json   # sanitized config template (real config.json is not in repo)
-  docs/
-    PROJECT_GUIDE.md    # detailed Chinese guide
-  dsh/agent-presets/    # qq-chat / qq-chat-v2 DSH agent preset templates
-  plugins/qq-mode-console  # DSH plugin: registers the qq-mode settings namespace (host half only; no UI card yet)
-  src/                  # bridge core and MCP servers
-  public/
-    console.html        # local web console
-  roles/                # persona cards
-  assets/               # images (the intro video ships as a release asset, not in the repo)
-  scripts/              # tests and helper scripts
-  state/                # runtime data (not in repo)
-```
-
-## Testing
-
-`npm run test:audit` runs isolated regression tests without production credentials, DSH, or QQ messages. The detailed audit is in [docs/AUDIT_REPORT_2026-09-18.md](docs/AUDIT_REPORT_2026-09-18.md) (Chinese).
-
-After upgrading, legacy QQ session mappings without permission metadata are recreated once. Mode or preset changes also retire the old mapping and recreate the session on the next message; DSH history is retained.
-
-```bash
-npm run self-test       # DSH-side link test, no QQ/SnowLuma required
-npm run test-md
-npm run test-wait
-npm run test-vision
-npm run test-forward
-npm run test-slang
-npm run test-stickers
-```
-
-## Compliance
-
-SnowLuma is an independent third-party project and is not affiliated with Tencent/QQ. This project is for learning and technical research only; please follow the relevant terms and the QQ User Agreement.
+Detailed documentation: [deployment](docs/DEPLOYMENT.md) · [configuration](docs/CONFIGURATION.md) · [troubleshooting](docs/TROUBLESHOOTING.md) · [project guide](docs/PROJECT_GUIDE.md) · [security](SECURITY.md). The detailed operational documents are currently in Chinese.

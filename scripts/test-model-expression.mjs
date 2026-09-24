@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {ModelChat} from '../src/model-chat.js';
+import {ChatMemory} from '../src/chat-memory.js';
+const temp=fs.mkdtempSync(path.join(os.tmpdir(),'qq-expression-test-'));
+try{
+ const texts=[],stickers=[],calls=[];
+ const api={sessions:{create:async()=>({result:{ok:true,value:{sessionId:'s'}}}),prompt:async p=>{calls.push(p);return{result:{ok:true}}}},stopSessionWork:async()=>{}};
+ const memory=new ChatMemory(path.join(temp,'memory'));
+ const large='有效笔记。'.repeat(2000);
+ memory.update('group:1',{content:large,enabled:true,revision:0});assert.equal(memory.read('group:1').content.length,large.length);
+ assert.throws(()=>memory.update('group:1',{content:'长'.repeat(30001),enabled:true,revision:1}));
+ const chat=new ModelChat({dir:path.join(temp,'chat'),api,memory,allowed:()=>true,persona:()=>({}),expression:()=>({style:'自然简短',stickers:[{id:'agree',description:'点头赞同'}]}),send:async(k,t,guard,o)=>texts.push({k,t,allowed:guard(),o}),sendSticker:async(k,id,guard,o)=>stickers.push({k,id,allowed:guard(),o})});
+ const start=()=>chat.receive('group:1',{sender:'甲',messageId:'-123',text:'赞同吗',time:'now'});
+ const done=async output=>{await chat.consume('s',{type:'assistant/message',data:{message:{content:[{type:'text',text:JSON.stringify({memory:null,...output})}]}}});await chat.consume('s',{type:'turn/end',data:{reason:{kind:'completed'}}});};
+ await start();assert.equal(calls[0].context.longTermMemory.content,large);assert.equal(calls[0].context.expression.style,'自然简短');
+ await done({reply:'',stickerIds:['agree'],replyTo:'-123'});assert.equal(texts.length,0);assert.equal(stickers[0].o.replyTo,'-123');assert.equal(stickers[0].k,'group:1');
+ await start();await done({reply:'赞同',stickerIds:['agree'],replyTo:'-123'});assert.equal(texts[0].o.replyTo,'-123');assert.equal(stickers[1].o.replyTo,null);
+ await start();await done({reply:'正常回答',stickerIds:['unknown'],replyTo:'999'});assert.equal(stickers.length,2);assert.equal(texts.at(-1).o.replyTo,null);
+ await start();await chat.pause(true);await chat.pause(false);await done({reply:'',stickerIds:['agree'],replyTo:null});assert.equal(stickers.length,2);
+ let learned=0;
+ chat.expression=async()=>({style:'自然',stickers:[{id:'agree'},{id:'second'}],learningIds:['second'],snapshots:[{id:'second'}],images:[{type:'text',text:'catalogImage:second'},{type:'image',data:'fixture',mediaType:'image/png'}]});
+ chat.learnStickers=(snapshots,notes)=>{assert.equal(snapshots[0].id,'second');assert.equal(notes[0].note,'笑脸');learned++;return 1;};
+ await start();assert.equal(calls.at(-1).content.at(-1).type,'image');assert.equal(calls.at(-1).context.expression.images,undefined);
+ await done({reply:'好呀',stickerIds:['agree','second'],stickerNotes:[{id:'second',note:'笑脸'}],replyTo:'-123'});
+ assert.equal(stickers.length,4);assert.equal(learned,1);assert.equal(stickers.at(-1).o.replyTo,null);
+ await start();await done({reply:'',stickerIds:['agree','agree'],replyTo:null});assert.equal(stickers.length,4);
+ await start();await done({reply:'',stickerIds:['agree','second','extra'],replyTo:null});assert.equal(stickers.length,4);
+ console.log('PASS 30k memory, full context, model-selected stickers, quotes, invalid IDs and cancellation');
+}finally{if(!path.resolve(temp).startsWith(path.resolve(os.tmpdir())+path.sep+'qq-expression-test-'))throw Error('Invalid cleanup target');fs.rmSync(temp,{recursive:true,force:true});}

@@ -9,6 +9,15 @@ const tests = [
   'test-audit-security.mjs', 'test-audit-security-mcp.mjs',
   'test-audit-setup.mjs', 'test-audit-setup-guards.mjs',
   'test-md-to-plain.mjs', 'test-slang-learn.mjs', 'test-mux-reconnect.mjs',
+  'test-restart-busy.mjs',
+  'test-codex-client.mjs',
+  'test-model-chat.mjs',
+  'test-model-console.mjs',
+  'test-chat-memory.mjs',
+  'test-model-expression.mjs',
+  'test-sticker-learning.mjs',
+  'test-model-quote.mjs',
+  'test-sticker-collector.mjs',
 ];
 let failed = 0;
 for (const test of tests) {

@@ -14,7 +14,11 @@ import * as safeFetch from '../src/safe-fetch.js';
 import * as forward from '../src/forward.js';
 import * as slang from '../src/slang-learner.js';
 import * as sticker from '../src/sticker-lib.js';
+import * as stickerLearning from '../src/sticker-learning.js';
+import {StickerCollector} from '../src/sticker-collector.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
+import { ModelChat, DEFAULT_CHAT_STYLE } from '../src/model-chat.js';
+import { ChatMemory } from '../src/chat-memory.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 export async function bridgeHarness({ config = {}, savedState, globals = {} } = {}) {
@@ -57,6 +61,7 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
   return {
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
+    pumpMux, isConversationBusyV2, modelChat,
     setMode(value) { currentMode = value; },
     setReady(value) { dshReady = value; },
     setPresets(value) { dshPresetIds = value; dshDefaultPreset = 'standard'; },
@@ -66,13 +71,15 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
   const timers = new Set();
   const context = vm.createContext({
     fs, path, http, crypto, fileURLToPath, URL, Buffer, AbortSignal, console: { log() {}, error() {} },
-    process: { pid: process.pid, platform: process.platform, kill: process.kill, exit: (code) => { throw new Error('unexpected exit ' + code); } },
+    process: { env: {}, pid: process.pid, platform: process.platform, kill: process.kill, exit: (code) => { throw new Error('unexpected exit ' + code); } },
     setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timers.add(timer); return timer; },
     clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     NodeApiClient: class { constructor() { return api; } },
+    CodexApiClient: class { constructor() { return api; } }, ModelChat, DEFAULT_CHAT_STYLE, StickerCollector,
+    ChatMemory,
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector,
-    ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker,
+    ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker, ...stickerLearning,
     ...globals,
   });
   vm.runInContext(source + '\nglobalThis.auditReady = main();', context);

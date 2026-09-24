@@ -229,7 +229,7 @@
   <header class="topbar">
     <div>
       <h1>QQ 桥接控制台</h1>
-      <div class="sub">DeepSeek Harness ↔ QQ 模式后台 · 修改即时生效（桥接 5 秒内感知）</div>
+      <div class="sub">Codex · gpt-6-luna / max ↔ QQ · 修改即时生效（桥接 5 秒内感知）</div>
     </div>
     <div class="status-badge" id="statusText">加载中…</div>
   </header>
@@ -241,15 +241,15 @@
       <h2><span class="sec-no">01</span>运行模式</h2>
       <div class="mode-row" id="modeRow">
         <button data-mode="chat">聊天模式</button>
-        <button data-mode="closed-agent">封闭 Agent</button>
+        <button data-mode="closed-agent" disabled title="聊天部署不开放电脑操作">封闭 Agent（未开放）</button>
         <button data-mode="reserved">一代仿真模式</button>
         <button data-mode="reserved2">二代仿真模式</button>
       </div>
       <div class="row" style="margin-top:12px">
-        <label style="flex:1;margin:0">封闭 Agent 使用的 DSH 预设</label>
-        <select id="closedPreset" style="max-width:260px"><option value="">（DSH 默认 preset）</option></select>
+        <label style="flex:1;margin:0">封闭 Agent 使用的 Codex 预设</label>
+        <select disabled id="closedPreset" style="max-width:260px"><option value="">（Codex 默认 preset）</option></select>
       </div>
-      <div class="meta">二代仿真模式（reserved2）骨架已接入；完整“一切皆工具”链路开发中。</div>
+      <div class="meta">二代仿真由 Codex 自主读取消息、回复与设置唤醒；仅开放聊天工具。</div>
     </section>
 
     <!-- ============ 02 会话与消息 ============ -->
@@ -661,7 +661,7 @@
     <!-- ============ 08 黑话库 ============ -->
     <section class="card span-all">
       <h2><span class="sec-no">08</span>群聊黑话 / 网络用语库</h2>
-      <div class="meta">DSH 会从群聊中自动提取疑似黑话候选；二代仿真模式下 AI 也可用 <code>qq_slang_submit</code> 主动提交陌生词。候选可批量送 DSH 深度联网研究，研究结果回到控制台由你删改修正后转正；确认后的词条会写入“黑话提示词”，注入一代/二代 AI 的聊天上下文，成为 AI 可查询和使用的记忆。</div>
+      <div class="meta">Codex 会从群聊中自动提取疑似黑话候选；二代仿真模式下 AI 也可用 <code>qq_slang_submit</code> 主动提交陌生词。候选可批量送 Codex 深度联网研究，研究结果回到控制台由你删改修正后转正；确认后的词条会写入“黑话提示词”，注入一代/二代 AI 的聊天上下文，成为 AI 可查询和使用的记忆。</div>
 
       <div class="slang-tabs">
         <button class="slang-tab active" data-slang-tab="candidate">候选词</button>
@@ -674,7 +674,7 @@
       <div class="slang-panel active" id="slangPanelCandidate">
         <div class="row" style="margin-top:8px">
           <label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="slangCandidateSelectAll"> 全选</label>
-          <button id="slangBatchResearch" class="small">批量送 DSH 深度研究</button>
+          <button id="slangBatchResearch" class="small">批量送 Codex 深度研究</button>
           <button id="slangBatchConfirm" class="small">批量确认（有含义）</button>
           <button id="slangBatchReject" class="small">批量拒绝</button>
           <button id="slangBatchDeleteCand" class="small danger">批量删除候选</button>
@@ -793,16 +793,16 @@
         <textarea id="slangModalSources" rows="3" placeholder="https://..."></textarea>
         <div class="row">
           <button id="slangModalDirectConfirm" class="small">直接确认（转正）</button>
-          <button id="slangModalSendResearch" class="small">送 DSH 深度研究</button>
+          <button id="slangModalSendResearch" class="small">送 Codex 深度研究</button>
           <button id="slangModalCancel" class="small">取消</button>
         </div>
       </div>
     </div>
 
-    <!-- ============ 09 DSH 侧 MCP 工具 ============ -->
+    <!-- ============ 09 Codex 侧 MCP 工具 ============ -->
     <section class="card span-all">
-      <h2><span class="sec-no">09</span>DSH 侧 MCP 工具</h2>
-      <div class="meta">由 qq-bridge 的 MCP server 提供给 DSH agent；修改后需重启 DSH 才会刷新工具 schema。</div>
+      <h2><span class="sec-no">09</span>Codex 侧 MCP 工具</h2>
+      <div class="meta">由 qq-bridge 的 MCP server 提供给 Codex agent；修改后需重启 Codex 才会刷新工具 schema。</div>
       <table>
         <tr><th>工具</th><th>说明</th></tr>
         <tr><td>qq_status</td><td>登录状态（只读）</td></tr>
@@ -907,7 +907,7 @@
     <!-- ============ 15 后台控制端引导 ============ -->
     <section class="card span-all">
       <h2><span class="sec-no">15</span>后台控制端引导</h2>
-      <div class="meta">直接向指定 QQ 会话的 DSH agent 投递一条“后台控制端提醒”，用于给 AI 引导/提醒；该消息不是群友消息。二代模式（reserved2）下会自动附带会话令牌和二代工具协议说明，AI 的文本输出不会自动转发，发言需通过发送工具。</div>
+      <div class="meta">直接向指定 QQ 会话的 Codex agent 投递一条“后台控制端提醒”，用于给 AI 引导/提醒；该消息不是群友消息。二代模式（reserved2）下会自动附带会话令牌和二代工具协议说明，AI 的文本输出不会自动转发，发言需通过发送工具。</div>
       <div class="row" style="margin-top:10px">
         <select id="aiNotifyKind" style="width:110px">
           <option value="group">群</option>
@@ -915,10 +915,10 @@
         </select>
         <input type="text" id="aiNotifyId" placeholder="群号 / QQ 号" style="width:180px">
       </div>
-      <label>提醒内容（发给 DSH agent 的引导/提醒）</label>
+      <label>提醒内容（发给 Codex agent 的引导/提醒）</label>
       <textarea id="aiNotifyMessage" placeholder="例如：接下来群里聊到某个话题时，你可以更主动一点；或：先潜水，等我叫你。"></textarea>
       <div class="row" style="margin-top:8px">
-        <button id="aiNotifySend">发送到 DSH</button>
+        <button id="aiNotifySend">发送到 Codex</button>
         <span class="meta" id="aiNotifyMsg"></span>
       </div>
     </section>
@@ -965,7 +965,7 @@ async function refresh() {
     document.getElementById('roleText').textContent = s.role || '无';
     document.getElementById('roleModeText').textContent = s.roleMode === 'silent' ? '静默' : '正常';
     const modeLabel = s.mode === 'reserved' ? '一代仿真模式' : s.mode === 'reserved2' ? '二代仿真模式' : s.mode === 'closed-agent' ? '封闭 Agent' : '聊天模式';
-    document.getElementById('statusText').textContent = 'DSH: ' + (s.dshReady ? '在线' : '离线') + ' ｜ 模式: ' + modeLabel + ' ｜ 管理员: ' + (s.ownerQQ || '未设置') + ' ｜ 群白名单: ' + (s.allowGroups.join(', ') || '无') + ' ｜ 私聊白名单: ' + (s.allowPrivate.join(', ') || '无');
+    document.getElementById('statusText').textContent = 'Codex: ' + (s.dshReady ? '在线' : '离线') + ' ｜ 模式: ' + modeLabel + ' ｜ 管理员: ' + (s.ownerQQ || '未设置') + ' ｜ 群白名单: ' + (s.allowGroups.join(', ') || '无') + ' ｜ 私聊白名单: ' + (s.allowPrivate.join(', ') || '无');
     document.getElementById('activity').textContent = s.activity || '（空）';
     const presetSel = document.getElementById('closedPreset');
     if (presetSel && document.activeElement !== presetSel) presetSel.value = s.closedAgentPreset || '';
@@ -977,10 +977,10 @@ async function refreshPresets() {
     const r = await api('/api/presets');
     const sel = document.getElementById('closedPreset');
     sel.innerHTML = '';
-    // 空值 = 使用 DSH 自己声明的默认 preset（closed-agent 的推荐选择）
+    // 空值 = 使用 Codex 自己声明的默认 preset（closed-agent 的推荐选择）
     const defOpt = document.createElement('option');
     defOpt.value = '';
-    defOpt.textContent = '（DSH 默认 preset）';
+    defOpt.textContent = '（Codex 默认 preset）';
     sel.appendChild(defOpt);
     for (const p of r.presets) {
       const opt = document.createElement('option');
@@ -993,16 +993,16 @@ async function refreshPresets() {
 }
 
 async function saveMode(mode) {
-  // 不再硬编码 'router-standard'（DSH 0.1.5 已无此 preset）；
-  // 留空表示让桥接使用 DSH 自己声明的默认 preset。
+  // 不再硬编码 'router-standard'（Codex 0.1.5 已无此 preset）；
+  // 留空表示让桥接使用 Codex 自己声明的默认 preset。
   const preset = document.getElementById('closedPreset').value || '';
   const r = await api('/api/mode', 'POST', { mode, closedAgentPreset: preset });
   if (r.ok) {
     refresh();
-    // 桥接会把模式写穿到 DSH 设置；写穿失败时本地值会在下一次 5 秒轮询被覆盖回滚。
+    // 桥接会把模式写穿到 Codex 设置；写穿失败时本地值会在下一次 5 秒轮询被覆盖回滚。
     // 不提示的话用户只会看到「刚切过去又自己变回来了」，无从判断原因。
     if (r.dshSynced === false) {
-      alert('模式已写入本地，但未能同步到 DSH 设置（DSH 未运行？）——\n下一次轮询（约 5 秒）会把模式改回去。请检查 DSH 与桥接日志。');
+      alert('模式已写入本地，但未能同步到 Codex 设置（Codex 未运行？）——\n下一次轮询（约 5 秒）会把模式改回去。请检查 Codex 与桥接日志。');
     }
   } else {
     alert(r.error || '切换失败');
@@ -1041,7 +1041,7 @@ async function refreshSessions() {
     const s = await api('/api/sessions');
     const box = document.getElementById('sessionList');
     if (!s.sessions.length) { box.innerHTML = '<span class="meta">暂无会话</span>'; return; }
-    let html = '<table><tr><th>QQ 会话</th><th>DSH 会话 ID</th><th>类型</th><th></th></tr>';
+    let html = '<table><tr><th>QQ 会话</th><th>Codex 会话 ID</th><th>类型</th><th></th></tr>';
     for (const x of s.sessions) {
       const isP = x.key.startsWith('private:');
       const type = isP ? '<span class="pill b">私聊</span>' : '<span class="pill g">群</span>';
@@ -1138,7 +1138,7 @@ document.getElementById('aiNotifySend').addEventListener('click', async () => {
   if (!id || !message) { alert('请填写群号/QQ 号和提醒内容'); return; }
   const r = await api('/api/console/notify-ai', 'POST', { key: kind + ':' + id, message });
   const msg = document.getElementById('aiNotifyMsg');
-  msg.textContent = r.ok ? ('✅ 已投递到 DSH：' + r.sessionId) : ('❌ ' + (r.error || '失败'));
+  msg.textContent = r.ok ? ('✅ 已投递到 Codex：' + r.sessionId) : ('❌ ' + (r.error || '失败'));
   msg.className = r.ok ? 'meta ok' : 'meta err';
 });
 
@@ -1878,7 +1878,7 @@ function renderSlangPanel() {
   const q = getSlangSearch();
   const filtered = q ? list.filter((e) => slangSearchFields(e).includes(q)) : list;
   if (!filtered.length) {
-    box.innerHTML = '<div class="meta" style="padding:8px">' + (list.length ? '没有符合条件的词条' : (status === 'candidate' ? '暂无候选黑话，等 DSH 自动提取、AI 提交或手动添加' : status === 'confirmed' ? '暂无已确认黑话' : '暂无已拒绝词条')) + '</div>';
+    box.innerHTML = '<div class="meta" style="padding:8px">' + (list.length ? '没有符合条件的词条' : (status === 'candidate' ? '暂无候选黑话，等 Codex 自动提取、AI 提交或手动添加' : status === 'confirmed' ? '暂无已确认黑话' : '暂无已拒绝词条')) + '</div>';
     updateSlangSelectAll(status);
     return;
   }
@@ -1962,7 +1962,7 @@ function openSlangModal(id, mode) {
   slangModalMode = mode;
   document.getElementById('slangModalTitle').textContent = mode === 'confirm' ? `确认黑话：${e.content}` : `编辑黑话：${e.content}`;
   document.getElementById('slangModalContent').textContent = mode === 'confirm'
-    ? '你可以直接填写含义/用法并转正，也可以先送 DSH 深度联网研究，研究结果回来后在此处删改再确认。'
+    ? '你可以直接填写含义/用法并转正，也可以先送 Codex 深度联网研究，研究结果回来后在此处删改再确认。'
     : '修改后保存；候选不会转正，已确认仍保持已确认。';
   document.getElementById('slangModalMeaning').value = e.meaning || '';
   document.getElementById('slangModalUsage').value = e.usage || '';
@@ -2019,7 +2019,7 @@ document.getElementById('slangBatchResearch').addEventListener('click', async ()
   const ids = selectedIdsForStatus('candidate');
   if (!ids.length) { alert('请先勾选要研究的候选词'); return; }
   const r = await api('/api/slang/research', 'POST', { ids });
-  setSlangMsg(r.ok ? `✅ 已送 ${r.count} 条候选到 DSH 深度联网研究，完成后刷新查看结果` : ('❌ ' + (r.error || '失败')), r.ok);
+  setSlangMsg(r.ok ? `✅ 已送 ${r.count} 条候选到 Codex 深度联网研究，完成后刷新查看结果` : ('❌ ' + (r.error || '失败')), r.ok);
   if (r.ok) refreshSlang();
 });
 document.getElementById('slangBatchConfirm').addEventListener('click', async () => {
@@ -2089,7 +2089,7 @@ document.getElementById('slangModalDirectConfirm').addEventListener('click', asy
 document.getElementById('slangModalSendResearch').addEventListener('click', async () => {
   if (!slangModalId) return;
   const r = await api('/api/slang/research', 'POST', { ids: [slangModalId] });
-  setSlangMsg(r.ok ? `✅ 已送「${slangEntriesCache.find((x) => x.id === slangModalId)?.content || ''}」到 DSH 深度联网研究，稍后刷新查看结果` : ('❌ ' + (r.error || '失败')), r.ok);
+  setSlangMsg(r.ok ? `✅ 已送「${slangEntriesCache.find((x) => x.id === slangModalId)?.content || ''}」到 Codex 深度联网研究，稍后刷新查看结果` : ('❌ ' + (r.error || '失败')), r.ok);
   closeSlangModal();
   refreshSlang();
 });

@@ -5,7 +5,8 @@
     "conversationMode": "model",
     "model": "gpt-6-luna",
     "reasoningEffort": "max",
-    "serviceTier": "default"
+    "serviceTier": "default",
+    "autoCompactTokenLimit": null
   },
   "chatMemory": {
     "directory": "state/chat-memory"

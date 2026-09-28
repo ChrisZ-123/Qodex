@@ -12,13 +12,15 @@ const tests = [
   'test-restart-busy.mjs',
   'test-codex-client.mjs',
   'test-model-chat.mjs',
-  'test-chat-reset.mjs',
   'test-model-console.mjs',
   'test-chat-memory.mjs',
   'test-model-expression.mjs',
   'test-sticker-learning.mjs',
   'test-model-quote.mjs',
   'test-sticker-collector.mjs',
+  'test-chat-reset.mjs',
+  'test-model-features.mjs',
+  'test-model-backup.mjs',
 ];
 let failed = 0;
 for (const test of tests) {

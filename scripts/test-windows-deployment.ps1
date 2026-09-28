@@ -76,6 +76,8 @@ try {
     $config.codex.exe = $fakeExe
     $config.codex.model = 'fixture-model'
     $config.codex.reasoningEffort = 'max'
+    # The console writes null for standard speed; startup must accept it after an upgrade.
+    $config.codex.serviceTier = $null
     $config.snowluma.wsUrl = "ws://127.0.0.1:$($ports[0])"
     $config.snowluma.httpUrl = "http://127.0.0.1:$($ports[1])"
     $config.snowluma.webUiUrl = "http://127.0.0.1:$($ports[2])"

@@ -19,6 +19,8 @@ import {StickerCollector} from '../src/sticker-collector.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 import { ModelChat, DEFAULT_CHAT_STYLE } from '../src/model-chat.js';
 import { ChatMemory } from '../src/chat-memory.js';
+import { ModelPreferences } from '../src/model-preferences.js';
+import { ModelBackup } from '../src/model-backup.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 export async function bridgeHarness({ config = {}, savedState, globals = {} } = {}) {
@@ -63,7 +65,7 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
   return {
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
-    pumpMux, isConversationBusyV2, modelChat,
+    pumpMux, isConversationBusyV2, modelChat, chatPreferences, chatBackup,
     setMode(value) { currentMode = value; },
     setReady(value) { dshReady = value; },
     setPresets(value) { dshPresetIds = value; dshDefaultPreset = 'standard'; },
@@ -77,7 +79,7 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timers.add(timer); return timer; },
     clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     NodeApiClient: class { constructor() { return api; } },
-    CodexApiClient: class { constructor() { return api; } }, ModelChat, DEFAULT_CHAT_STYLE, StickerCollector,
+    CodexApiClient: class { constructor() { return api; } }, ModelChat, DEFAULT_CHAT_STYLE, StickerCollector, ModelPreferences, ModelBackup,
     ChatMemory,
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector,

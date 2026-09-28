@@ -7,7 +7,7 @@ const server=h.startConsoleServer();
 try{
  if(!server.listening)await new Promise(r=>server.once('listening',r));
  const url='http://127.0.0.1:'+server.address().port;
- const request=(route,body,extra={})=>fetch(url+route,{method:body?'POST':'GET',headers:{'x-console-token':'fixture-console-token',...(body?{'content-type':'application/json'}:{}),...extra},...(body?{body:JSON.stringify(body)}:{})});
+ const request=async(route,body,extra={})=>{if(body&&['/api/chat/models','/api/chat/expression'].includes(route))body={...body,revision:(await(await request(route)).json()).revision};return fetch(url+route,{method:body?'POST':'GET',headers:{'x-console-token':'fixture-console-token',...(body?{'content-type':'application/json'}:{}),...extra},...(body?{body:JSON.stringify(body)}:{})});};
  assert.equal((await fetch(url+'/api/chat')).status,401);
  const login=await fetch(url+'/');assert.equal(login.status,401);
  const loginHtml=await login.text();assert(loginHtml.includes('name="token"'));assert(!loginHtml.includes('prompt('));
@@ -41,7 +41,7 @@ try{
  const models=await(await request('/api/chat/models')).json();assert.equal(models.models.length,2);
  assert.equal((await request('/api/chat/models',{model:'missing',reasoningEffort:'max'})).status,400);
  assert.equal((await request('/api/chat/models',{model:'fixture-model',reasoningEffort:'max'})).status,400);
- assert.equal((await request('/api/chat/models',{model:'fixture-model',reasoningEffort:'low'})).status,409);
+ assert.equal((await request('/api/chat/models',{model:'fixture-model',reasoningEffort:'low'})).status,200);
  assert.equal((await request('/api/chat/reset',{key:'group:456'})).status,200);
  assert.equal((await request('/api/chat/reset',{key:'group:789'})).status,200);
  assert.equal((await request('/api/chat/models',{model:'fixture-model',reasoningEffort:'low'})).status,200);

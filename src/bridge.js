@@ -14,6 +14,8 @@ import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
 import { CodexApiClient } from './codex-client.js';
 import { ModelChat, DEFAULT_CHAT_STYLE } from './model-chat.js';
+import { ModelPreferences } from './model-preferences.js';
+import { ModelBackup } from './model-backup.js';
 import { ChatMemory } from './chat-memory.js';
 import { mdToPlain, splitForQQ } from './md-to-plain.js';
 import { SENSITIVE_RE } from './sensitive.js';
@@ -228,7 +230,7 @@ function loadConfig() {
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error(`配置格式错误：${p}`);
   const cfg = {
     backend: file.backend ?? 'dsh',
-    codex: file.codex ?? {},
+    codex: { ...(file.codex ?? {}), serviceTier: file.codex?.serviceTier === 'default' ? null : (file.codex?.serviceTier ?? null) },
     chatMemory: { directory: 'state/chat-memory', ...(file.chatMemory ?? {}) },
     dsh: {
       baseUrl: 'http://127.0.0.1:3080',
@@ -754,6 +756,9 @@ async function main() {
       }
       const fetched = response.data;
       stickerEntries = mergeStickerLibrary(stickerEntries, fetched, { complete: fetched.length < count });
+      const pendingFile=path.join(STATE_DIR,'restored-sticker-notes.json'),pendingNotes=readJsonSafe(pendingFile,{});
+      let consumed=false;stickerEntries=stickerEntries.map(entry=>{const note=Object.hasOwn(pendingNotes,entry.id)?pendingNotes[entry.id]:null;if(!note||typeof note!=='object')return entry;delete pendingNotes[entry.id];consumed=true;return {...entry,localNote:note.localNote,tags:note.tags,usage:note.usage,noteSource:note.noteSource};});
+      if(consumed)atomicWriteJson(pendingFile,pendingNotes);
       stickerSyncedAt = Date.now();
       saveStickerStoreSafe();
       log(`[sticker] 已同步 QQ 收藏表情 ${fetched.length} 个（本地库 ${stickerEntries.length} 条）`);
@@ -1614,7 +1619,7 @@ async function main() {
       }
       const SECURITY_HEADERS = {
         'X-Frame-Options': 'DENY',
-        'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+        'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer'
@@ -1624,7 +1629,7 @@ async function main() {
         res.end(JSON.stringify(obj, null, 2));
       };
       const readBody = () => new Promise((resolve, reject) => {
-        const MAX_BODY_BYTES = 1_000_000;
+        const MAX_BODY_BYTES = url.pathname.startsWith('/api/chat/backup') ? 32_000_000 : 1_000_000;
         const chunks = [];
         let total = 0;
         let settled = false;
@@ -1714,6 +1719,59 @@ async function main() {
         if (modelDirected && req.headers['x-agent-token'] !== undefined) {
           sendJson({ok:false,error:'模型自主模式不开放旧版 MCP 接口'},403); return;
         }
+        if(modelDirected&&modelChat.restoring&&req.method==='POST'){sendJson({ok:false,error:'正在恢复备份，请稍候'},409);return;}
+        if(modelDirected&&url.pathname==='/api/chat/backup'&&req.method==='GET'){sendJson(chatBackup.export(url.searchParams.get('history')==='1'));return;}
+        if(modelDirected&&url.pathname==='/api/chat/backup/preview'&&req.method==='POST'){
+          try{const body=await readBody();sendJson(chatBackup.preview(body.backup,await api.listModels()));}catch(error){sendJson({ok:false,error:redactKnownTokensOnly(error.message)},error.statusCode??400);}return;
+        }
+        if(modelDirected&&url.pathname==='/api/chat/backup/restore'&&req.method==='POST'){
+          try{const body=await readBody();sendJson(await chatBackup.restore(body.id,body.sections));}catch(error){sendJson({ok:false,error:redactKnownTokensOnly(error.message)},error.statusCode??400);}return;
+        }
+        if(modelDirected&&url.pathname==='/api/chat/settings'){
+          const body=req.method==='POST'?await readBody():null,key=body?.key??url.searchParams.get('key');
+          if(!modelChat.valid(key)){sendJson({ok:false,error:'请选择会话'},400);return;}
+          try{
+            if(body)chatPreferences.updateConversation(key,body.patch,body.revision,{roles:listRoles(),models:await api.listModels()});
+            sendJson({revision:chatPreferences.data.revision,override:chatPreferences.conversation(key),effective:modelChat.effective(key)});
+          }catch(error){sendJson({ok:false,error:error.message},error.statusCode??400);}return;
+        }
+        if(modelDirected&&url.pathname==='/api/chat/runs'&&req.method==='GET'){
+          const key=url.searchParams.get('key');if(!modelChat.valid(key)){sendJson({ok:false,error:'请选择会话'},400);return;}
+          sendJson({runs:modelChat.entry(key).runs??[],pending:modelChat.pending.get(key)?.length??0});return;
+        }
+        if(modelDirected&&url.pathname==='/api/chat/cancel'&&req.method==='POST'){
+          const body=await readBody();if(!modelChat.valid(body.key)){sendJson({ok:false,error:'请选择会话'},400);return;}
+          sendJson(await modelChat.cancel(body.key));return;
+        }
+        if(modelDirected&&url.pathname==='/api/chat/feedback'){
+          const body=req.method==='POST'?await readBody():null,key=body?.key??url.searchParams.get('key');
+          if(!modelChat.valid(key)){sendJson({ok:false,error:'请选择会话'},400);return;}
+          try{
+            if(body){if(body.action==='undo')chatPreferences.undoFeedback(key,body.id,body.revision);
+              else{if(!modelChat.entry(key).messages.some(m=>m.kind==='assistant'&&m.id===body.messageId))throw new Error('机器人回复不存在');chatPreferences.addFeedback(key,body);}}
+            sendJson({revision:chatPreferences.data.revision,items:chatPreferences.conversation(key).feedback,hint:chatPreferences.feedbackHint(key)});
+          }catch(error){sendJson({ok:false,error:error.message},error.statusCode??400);}return;
+        }
+        if(modelDirected&&url.pathname==='/api/chat/gallery'){
+          const body=req.method==='POST'?await readBody():null,key=body?.key??url.searchParams.get('key');
+          if(key&&!modelChat.valid(key)){sendJson({ok:false,error:'会话无效'},400);return;}
+          try{
+            if(body){if(!stickerEntries.some(s=>s.id===body.id))throw new Error('收藏表情不存在');chatPreferences.setStickerDisabled(body.id,body.disabled,key||null,body.revision);}
+            const query=(url.searchParams.get('query')??'').toLowerCase();
+            sendJson({revision:chatPreferences.data.revision,items:stickerEntries.filter(s=>[s.desc,s.localNote,s.usage,...(s.tags??[])].join(' ').toLowerCase().includes(query)).map(s=>({id:s.id,desc:s.desc,localNote:s.localNote,tags:s.tags,usage:s.usage,noteSource:s.noteSource,learningError:s.learningError,globalDisabled:chatPreferences.data.globalDisabledStickers.includes(s.id),localDisabled:key?chatPreferences.conversation(key).disabledStickers.includes(s.id):false}))});
+          }catch(error){sendJson({ok:false,error:error.message},error.statusCode??400);}return;
+        }
+        if(modelDirected&&url.pathname==='/api/chat/sticker-preview'&&req.method==='GET'){
+          try{const entry=stickerEntries.find(s=>s.id===url.searchParams.get('id'));if(!entry)throw new Error('表情不存在');const {buffer}=await safeFetchBuffer(entry.url,MAX_MEDIA_BYTES);const mime=mimeFromBuffer(buffer);if(!['image/png','image/jpeg','image/gif','image/webp'].includes(mime))throw new Error('图片格式不支持');sendJson({image:{mimeType:mime,data:buffer.toString('base64')}});}
+          catch{sendJson({ok:false,error:'图片读取失败，请同步收藏后重试'},502);}return;
+        }
+        if(modelDirected&&url.pathname==='/api/chat/sticker-note'&&req.method==='POST'){
+          const body=await readBody(),entry=stickerEntries.find(s=>s.id===body.id);
+          if(!entry){sendJson({ok:false,error:'表情不存在'},404);return;}
+          if((entry.localNote??'')!==body.expectedNote||(entry.noteSource??'')!==body.expectedSource){sendJson({ok:false,error:'备注已更新，请刷新后重试'},409);return;}
+          if(typeof body.note!=='string'||body.note.length>200){sendJson({ok:false,error:'备注最多 200 字符'},400);return;}
+          applyStickerNoteV2(body.id,redactKnownTokensOnly(body.note),entry.tags,entry.usage);sendJson({ok:true});return;
+        }
         if (modelDirected && req.method === 'GET' && url.pathname === '/api/chat') {
           const key=url.searchParams.get('key');
           if(key){if(!modelChat.valid(key)){sendJson({ok:false},400);return;}sendJson(modelChat.history(key,url.searchParams.get('before')));}
@@ -1723,16 +1781,22 @@ async function main() {
         if(modelDirected && url.pathname==='/api/chat/models'){
           try{
             const models=await api.listModels();
-            if(req.method==='GET'){sendJson({models,current:{model:cfg.codex.model,reasoningEffort:cfg.codex.reasoningEffort,serviceTier:cfg.codex.serviceTier}});return;}
+            const current={model:cfg.codex.model,reasoningEffort:cfg.codex.reasoningEffort,serviceTier:cfg.codex.serviceTier??null,autoCompactTokenLimit:cfg.codex.autoCompactTokenLimit??null};
+            if(req.method==='GET'){sendJson({models,current,revision:JSON.stringify(current)});return;}
             if(req.method==='POST'){
               const body=await readBody(),model=models.find(m=>m.model===body.model);
               if(!model||!model.efforts.includes(body.reasoningEffort)){sendJson({ok:false,error:'请选择账户可用的模型和推理强度'},400);return;}
-              if(modelChat.running.size){sendJson({ok:false,error:'仍有会话正在处理，请等待完成或暂停接话后再保存'},409);return;}
+              if(body.revision!==JSON.stringify(current)){sendJson({ok:false,error:'模型设置已变化，请刷新模型列表后重试'},409);return;}
+              const limit=Object.hasOwn(body,'autoCompactTokenLimit')?body.autoCompactTokenLimit:current.autoCompactTokenLimit;
+              if(limit!==null&&(!Number.isSafeInteger(limit)||limit<8000||limit>1000000)){sendJson({ok:false,error:'压缩阈值请留空使用模型默认，或填写 8000 至 1000000 token'},400);return;}
+              const serviceTier=Object.hasOwn(body,'serviceTier')?body.serviceTier:current.serviceTier;
+              if(serviceTier!==null&&serviceTier!=='priority'){sendJson({ok:false,error:'请选择标准或加速速度'},400);return;}
               const file=path.join(ROOT,'config.json'),saved=readJsonSafe(file,null);
               if(!saved)throw new Error('配置不可读');
-              saved.codex={...saved.codex,model:body.model,reasoningEffort:body.reasoningEffort};atomicWriteJson(file,saved);
-              Object.assign(cfg.codex,{model:body.model,reasoningEffort:body.reasoningEffort});
-              Object.assign(api.config,{model:body.model,reasoningEffort:body.reasoningEffort});
+              const patch={model:body.model,reasoningEffort:body.reasoningEffort,autoCompactTokenLimit:limit,serviceTier};
+              saved.codex={...saved.codex,...patch};atomicWriteJson(file,saved);
+              Object.assign(cfg.codex,patch);
+              Object.assign(api.config,patch);
               sendJson({ok:true});return;
             }
           }catch{sendJson({ok:false,error:'模型列表获取或设置保存失败，请检查 Codex 连接'},503);return;}
@@ -1748,22 +1812,25 @@ async function main() {
           if(!modelChat.valid(key)||!modelChat.entries.has(key)){sendJson({ok:false,error:'请先选择已有会话'},400);return;}
           if(req.method==='GET'){sendJson(modelChat.memory.ensure(key));return;}
           if(req.method==='POST'){
-            try{sendJson(modelChat.memory.update(key,body));}catch(error){sendJson({ok:false,error:error.message},error.statusCode??400);}return;
+            try{sendJson(body.action?modelChat.memory.mutate(key,body):modelChat.memory.update(key,body));}catch(error){sendJson({ok:false,error:error.message},error.statusCode??400);}return;
           }
         }
         if(modelDirected && url.pathname==='/api/chat/expression'){
-          if(req.method==='GET'){sendJson(readChatExpression());return;}
+          if(req.method==='GET'){const settings=readChatExpression();sendJson({...settings,revision:JSON.stringify(settings)});return;}
           if(req.method==='POST'){
             const body=await readBody();
             if(typeof body.style!=='string'||body.style.length>4000||typeof body.stickersEnabled!=='boolean'){sendJson({ok:false,error:'口吻最多 4000 字符，表情开关必须有效'},400);return;}
             if(body.autoLearnStickers!==undefined&&typeof body.autoLearnStickers!=='boolean'){sendJson({ok:false,error:'看图学习开关必须有效'},400);return;}
             if(body.autoCollectStickers!==undefined&&typeof body.autoCollectStickers!=='boolean'){sendJson({ok:false,error:'自动收藏开关必须有效'},400);return;}
+            if(body.revision!==JSON.stringify(readChatExpression())){sendJson({ok:false,error:'表达设置已变化，请重新加载后重试'},409);return;}
             atomicWriteJson(path.join(STATE_DIR,'chat-expression.json'),{style:body.style,stickersEnabled:body.stickersEnabled,autoLearnStickers:body.autoLearnStickers??readChatExpression().autoLearnStickers,autoCollectStickers:body.autoCollectStickers??readChatExpression().autoCollectStickers});sendJson({ok:true});return;
           }
         }
         if (modelDirected && req.method === 'POST' && url.pathname === '/api/chat/pause') {
           const body=await readBody();if(typeof body.paused!=='boolean'){sendJson({ok:false},400);return;}
-          await modelChat.pause(body.paused);sendJson({ok:true,paused:modelChat.paused});return;
+          if(body.key&&!modelChat.valid(body.key)){sendJson({ok:false,error:'会话无效'},400);return;}
+          if(body.revision!==undefined&&body.revision!==chatPreferences.data.revision){sendJson({ok:false,error:'状态已更新，请刷新'},409);return;}
+          await modelChat.pause(body.paused,body.key??null);sendJson({ok:true,paused:modelChat.paused});return;
         }
         if (req.method === 'GET' && url.pathname === '/api/roles/content') {
           const name=url.searchParams.get('name')??'';
@@ -1809,7 +1876,9 @@ async function main() {
         if (req.method === 'GET' && url.pathname === '/') {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
           try {
-            res.end(fs.readFileSync(path.join(ROOT, 'public', modelDirected ? 'model-console.html' : 'console.html'), 'utf8'));
+            let html=fs.readFileSync(path.join(ROOT, 'public', modelDirected ? 'model-console.html' : 'console.html'), 'utf8');
+            if(modelDirected)html=html.replace('</body>','<script>'+fs.readFileSync(path.join(ROOT,'public','model-controls.js'),'utf8')+'</script></body>');
+            res.end(html);
           } catch {
             res.end('控制台页面缺失：qq-bridge/public/console.html');
           }
@@ -1849,7 +1918,7 @@ async function main() {
         if (req.method === 'POST' && url.pathname === '/api/backend/stop') {
           if (req.headers['x-agent-token']) { sendJson({ok:false},403); return; }
           socialV2.paused = true;
-          if(modelDirected)await modelChat.pause(true);
+          if(modelDirected)await modelChat.suspend();
           for (const id of [...Object.values(state.sessions), ...learnerSessions]) await api.stopSessionWork(id);
           sendJson({ok:true});
           return;
@@ -4737,10 +4806,10 @@ async function main() {
     const [kind,id]=key.split(':');
     for(const part of splitForQQ(redactKnownTokensOnly(msg))){
       const job=sendChain.then(async()=>{
-        if(!stillCurrent()||modelChat.paused||!isSessionAllowedInCurrentMode(key))throw new Error('会话已暂停或不在白名单');
+        if(!stillCurrent()||modelChat.isPaused(key)||!isSessionAllowedInCurrentMode(key))throw new Error('会话已暂停或不在白名单');
         const message=options.replyTo?[{type:'reply',data:{id:options.replyTo}},{type:'text',data:{text:escapeCqText(part)}}]:text(escapeCqText(part));
-        if(kind==='group')await withTimeout(bot.sendGroupMessage(Number(id),message),SEND_TIMEOUT_MS,'QQ 群发送');
-        else await withTimeout(bot.sendPrivateMessage(Number(id),message),SEND_TIMEOUT_MS,'QQ 私聊发送');
+        const result=kind==='group'?await withTimeout(bot.sendGroupMessage(Number(id),message),SEND_TIMEOUT_MS,'QQ 群发送'):await withTimeout(bot.sendPrivateMessage(Number(id),message),SEND_TIMEOUT_MS,'QQ 私聊发送');
+        options.onSent?.(part,result?.message_id??null);
       });
       sendChain=job.catch(()=>{}).then(()=>sleep(cfg.sendDelayMs));
       await job;
@@ -6009,15 +6078,23 @@ async function main() {
   loadSocialV2State();
 
   function readChatExpression(){return {style:DEFAULT_CHAT_STYLE,stickersEnabled:true,autoLearnStickers:true,autoCollectStickers:true,...readJsonSafe(path.join(STATE_DIR,'chat-expression.json'),{})};}
+  const chatPreferences=modelDirected?new ModelPreferences(path.join(STATE_DIR,'model-preferences.json')):null;
+  function effectiveChatSettings(key){
+    const settings=chatPreferences.effective(key,{...cfg.codex,role:readRoleState().role??false,style:readChatExpression().style});
+    const role=settings.role;
+    return {...settings,persona:{name:role||null,content:role&&listRoles().includes(role)?fs.readFileSync(path.join(ROOT,'roles',role+'.md'),'utf8'):'',botName:selfNickname,adminQQ:String(cfg.ownerQQ??'')}};
+  }
 
   const modelChat = modelDirected ? new ModelChat({
     dir:path.join(STATE_DIR,'model-chat'), api,
+    preferences:chatPreferences,settings:effectiveChatSettings,
     memory:new ChatMemory(path.resolve(ROOT,cfg.chatMemory.directory)),
-    expression:async()=>{
+    expression:async(key,turnSettings)=>{
       const settings=readChatExpression();
+      const availableStickers=stickerEntries.filter(s=>chatPreferences.stickerAllowed(key,s.id));
       let learning={images:[],snapshots:[],failures:[]};
       if(settings.stickersEnabled&&settings.autoLearnStickers){
-        learning=await prepareStickerLearning(stickerEntries,async entry=>{
+        learning=await prepareStickerLearning(availableStickers,async entry=>{
           const {buffer}=await safeFetchBuffer(entry.url,MAX_MEDIA_BYTES);
           const dims=getImageDimensions(buffer);
           if(dims&&dims.width*dims.height>MAX_MEDIA_PIXELS)throw new Error('收藏图片像素超限');
@@ -6025,7 +6102,7 @@ async function main() {
         });
         if(learning.failures.length){const update=applyVisualNotes(stickerEntries,[],[],learning.failures);saveStickerStore(STICKER_FILE,update.entries);stickerEntries=update.entries;}
       }
-      return {style:settings.style,stickers:settings.stickersEnabled?stickerEntries.slice(0,100).map(s=>({id:s.id,description:[s.desc,s.localNote,s.usage].filter(Boolean).join('；'),tags:s.tags})):[],learningIds:learning.snapshots.map(s=>s.id),images:learning.images,snapshots:learning.snapshots,learningFailures:learning.failures.length};
+      return {style:turnSettings.style,feedback:turnSettings.feedback,stickers:settings.stickersEnabled?availableStickers.slice(0,100).map(s=>({id:s.id,description:[s.desc,s.localNote,s.usage].filter(Boolean).join('；'),tags:s.tags})):[],learningIds:learning.snapshots.map(s=>s.id),images:learning.images,snapshots:learning.snapshots,learningFailures:learning.failures.length};
     },
     learnStickers:(snapshots,notes)=>{
       const settings=readChatExpression();if(!settings.stickersEnabled||!settings.autoLearnStickers)return 0;
@@ -6033,16 +6110,18 @@ async function main() {
       if(update.learned){saveStickerStore(STICKER_FILE,update.entries);stickerEntries=update.entries;}
       return update.learned;
     },
-    sendSticker:async(key,id,stillCurrent,options)=>sendStickerV2(key,id,{replyToMessageId:options.replyTo,assertCurrent:()=>{if(!stillCurrent()||modelChat.paused||!readChatExpression().stickersEnabled||!isSessionAllowedInCurrentMode(key))throw new Error('表情发送已取消或权限已变化');}}),
+    sendSticker:async(key,id,stillCurrent,options)=>sendStickerV2(key,id,{replyToMessageId:options.replyTo,assertCurrent:()=>{if(!stillCurrent()||modelChat.isPaused(key)||!chatPreferences.stickerAllowed(key,id)||!readChatExpression().stickersEnabled||!isSessionAllowedInCurrentMode(key))throw new Error('表情发送已取消或权限已变化');}}),
     allowed:isSessionAllowedInCurrentMode, send:sendModelReply,
     persona:()=>({name:readRoleState().role,content:currentRoleHint(),botName:selfNickname,adminQQ:String(cfg.ownerQQ??'')}),
     redact:redactKnownTokensOnly,
     legacy:{...readJsonSafe(path.join(STATE_DIR,'social-v2.json'),{}),sessions:state.sessions}
   }) : null;
 
+  const chatBackup=modelDirected?new ModelBackup({root:ROOT,chat:modelChat,preferences:chatPreferences,getConfig:()=>cfg,getExpression:readChatExpression,getStickers:()=>stickerEntries,setStickers:(entries,persist=true)=>{if(persist)saveStickerStore(STICKER_FILE,entries);stickerEntries=entries;},redact:redactKnownTokensOnly,reload:()=>{const saved=loadConfig();for(const field of ['ownerQQ','allow','deny','allowAllWhenEmpty'])cfg[field]=saved[field];Object.assign(cfg.codex,saved.codex);Object.assign(api.config,saved.codex);roleHintCache={key:'',hint:''};}}):null;
+
   const stickerCollector = modelDirected ? new StickerCollector({
     enabled:()=>readChatExpression().autoCollectStickers&&!modelChat.paused,
-    allowed:isSessionAllowedInCurrentMode,count:()=>stickerEntries.length,
+    allowed:key=>isSessionAllowedInCurrentMode(key)&&!modelChat.isPaused(key),count:()=>stickerEntries.length,
     download:fetchOneBotImage,
     add:async buffer=>{
       const response=await bot.request('add_custom_face',{file:'base64://'+buffer.toString('base64')});
@@ -7523,6 +7602,7 @@ async function main() {
   // QQ 消息 → DSH prompt
   async function handleIncoming(kind, id, event, cfg) {
     const key = convKey(kind, id);
+    const pausedOnArrival=modelDirected&&modelChat.isPaused(key);
     if (!modeAllowed(key, kind, id, cfg, currentMode)) {
       log(`忽略未授权会话 ${key}（当前模式 ${currentMode}，来自 ${event.user_id}）`);
       return;
@@ -7539,13 +7619,14 @@ async function main() {
     const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
     const mediaList = extractMediaFromSegments(event.message ?? []);
     if(modelDirected){
-      try{for(const status of await stickerCollector.collect(key,event,mediaList))modelChat.append(key,{kind:'event',text:status});}
+      try{if(!pausedOnArrival)for(const status of await stickerCollector.collect(key,event,mediaList))modelChat.append(key,{kind:'event',text:status});}
       catch{modelChat.append(key,{kind:'event',text:'无法记录表情收藏状态，本条未自动收藏'});}
       await modelChat.receive(key,{
         sender:`${String(event.sender?.card||event.sender?.nickname||'群友')} (${event.user_id})`,
+        addressing:{mentionedBot:Array.isArray(event.message)&&event.message.some(seg=>seg?.type==='at'&&String(seg.data?.qq)===String(event.self_id)),repliedToBot:await isQuoteTargetSelf(event.message??[],kind,id,event.self_id)},
         messageId:String(event.message_id??''),
         text:textContent||'[图片或附件]',time:new Date().toISOString(),
-        images:await resolveMediaList(mediaList)
+        skipModel:pausedOnArrival,images:pausedOnArrival?[]:await resolveMediaList(mediaList)
       });
       return;
     }

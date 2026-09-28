@@ -22,6 +22,7 @@ runtime/
 downloads/
 SnowLuma/
 test-results/
+test-output/
 .cache/
 *.lnk
 

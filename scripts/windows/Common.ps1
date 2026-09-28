@@ -64,7 +64,7 @@ function Assert-QodexPort([object]$Value, [string]$Name) {
 
 function Assert-QodexConfig([object]$Config, [switch]$Initial) {
     if (-not $Config -or $Config.backend -ne 'codex' -or $Config.codex.conversationMode -ne 'model') { throw '配置必须使用 Codex 模型对话后端。' }
-    if (-not $Config.codex.model -or -not $Config.codex.reasoningEffort -or $Config.codex.serviceTier -notin @('default', 'priority')) { throw 'Codex 模型、推理强度或服务档位配置无效。' }
+    if (-not $Config.codex.model -or -not $Config.codex.reasoningEffort -or $Config.codex.serviceTier -notin @($null, 'default', 'priority')) { throw 'Codex 模型、推理强度或服务档位配置无效。' }
     $null = Get-QodexCodexExe ([string]$Config.codex.exe)
     $ws = Assert-QodexLoopbackUrl ([string]$Config.snowluma.wsUrl) @('ws', 'wss') 'OneBot WebSocket URL'
     $http = Assert-QodexLoopbackUrl ([string]$Config.snowluma.httpUrl) @('http', 'https') 'OneBot HTTP URL'

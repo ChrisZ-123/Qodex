@@ -1,7 +1,7 @@
-import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import assert from 'node:assert/strict';
 import {CodexApiClient} from '../src/codex-client.js';
 function fixture(){
  const c=Object.create(CodexApiClient.prototype);
@@ -36,9 +36,30 @@ function fixture(){
 }
 console.log('PASS Codex model pinning, owned-session boundary, tool allowlist, queue cancellation and start/cancel race');
 {
+ const c=fixture();c.config.conversationMode='model';
+ const outputSchema={type:'object',properties:{reply:{type:'string'}},required:['reply'],additionalProperties:false};
+ await c.prompt({sessionId:'owned',content:[{type:'text',text:'test'}],context:{longTermMemory:{enabled:true,content:'fixture preference'}},outputSchema});
+ assert.deepEqual(c.calls[0][1].outputSchema,outputSchema);
+ assert.equal(JSON.parse(c.calls[0][1].input[0].text).conversation_context.longTermMemory.content,'fixture preference');
+ assert(c.calls[0][1].additionalContext.bridge_context_contract.value.length<1000);
+ const longContext={persona:{content:'角色资料'.repeat(4000),botName:'Qodex'},memoryProtocol:'末尾协议'};
+ await c.startTurn('long',[{type:'text',text:'test'}],longContext);
+ assert.deepEqual(JSON.parse(c.calls.at(-1)[1].input[0].text).conversation_context,longContext);
+ await c.startTurn('speed',[{type:'text',text:'test'}],null,null,'speed-request',{serviceTier:null});assert.equal(c.calls.at(-1)[1].serviceTier,null);assert.equal(c.calls.at(-1)[1].serviceTierForTurn,'default');
+ console.log('PASS memory context and structured output forwarded to Codex turn');
+}
+{
+ const c=fixture();c.instructions=()=>'';c.save=()=>{};c.agentCwd=()=>process.cwd();c.config.autoCompactTokenLimit=64000;
+ await c.ensure('owned');assert.equal(c.calls[0][0],'thread/resume');assert.equal(c.calls[0][1].config.model_auto_compact_token_limit,64000);
+ await c.ensure('owned');assert.equal(c.calls.length,1);
+ await c.ensure('owned',{autoCompactTokenLimit:null});assert.deepEqual(c.calls[1][1].config,{});
+ console.log('PASS native compression threshold applies to existing threads and restores default');
+}
+
+{
  const temp=fs.mkdtempSync(path.join(os.tmpdir(),'qodex-fresh-cwd-'));
  try{
-  const c=fixture();c.root=temp;c.config.conversationMode='model';c.records={};c.live.clear();
+  const c=fixture();c.root=temp;c.config.conversationMode='model';c.records={};c.live.clear();c.listModels=async()=>[{model:c.config.model,efforts:[c.config.reasoningEffort]}];
   c.rpc.request=async(method,params)=>{
    assert(fs.statSync(params.cwd).isDirectory(),'Codex RPC must receive an existing cwd');
    assert.equal(params.cwd,path.join(temp,'state','agents'));
@@ -55,14 +76,7 @@ console.log('PASS Codex model pinning, owned-session boundary, tool allowlist, q
   fs.rmSync(temp,{recursive:true,force:true});
  }
 }
-{
- const c=fixture();c.config.conversationMode='model';
- const outputSchema={type:'object',properties:{reply:{type:'string'}},required:['reply'],additionalProperties:false};
- await c.prompt({sessionId:'owned',content:[{type:'text',text:'test'}],context:{longTermMemory:{enabled:true,content:'fixture preference'}},outputSchema});
- assert.deepEqual(c.calls[0][1].outputSchema,outputSchema);
- assert.equal(JSON.parse(c.calls[0][1].additionalContext.conversation_context.value).longTermMemory.content,'fixture preference');
- console.log('PASS memory context and structured output forwarded to Codex turn');
-}
+
 {
  const c=fixture();let calls=0;
  const model=(id,hidden=false)=>({model:id,displayName:id,hidden,supportedReasoningEfforts:[{reasoningEffort:'low'}],defaultReasoningEffort:'low'});

@@ -1,6 +1,6 @@
 # Windows 部署与运行
 
-本指南面向 `qodex-v0.2.0` 预览版。当前仅在 Windows 的已有本机环境验证；全新安装仍需按下文逐项检查。Qodex 需要本机持续运行，电脑睡眠、关机或断网时不能回复。
+本指南面向 `qodex-v0.3.0` 预览版。当前支持 Windows 部署；全新安装仍需按下文逐项检查。Qodex 需要本机持续运行，电脑睡眠、关机或断网时不能回复。
 
 ## 1. 准备依赖
 
@@ -28,7 +28,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1
 
 安装向导不会默认覆盖已有配置；再次运行主要用于检查当前安装。白名单默认是空的，`allowAllWhenEmpty=false`，因此配置完成前**不会响应任何群或私聊**。向导要求至少填写一个允许的群或私聊；先只放行你准备试用的目标。若填写 SnowLuma 启动器路径，Qodex 启动时会在 OneBot WebSocket 不可达的情况下尝试启动它；没有填写时仍可自行启动 SnowLuma。
 
-建议从 `gpt-6-luna` / `max` / 默认速度开始。Qodex 启动时会检查当前 ChatGPT 账号可用的模型和推理强度，不会自动降级到别的模型。可选 `priority` 速度可能影响与其他 Codex 使用共享的额度。已有本机环境曾使用 Node 24.18.1、`codex-cli 0.155.0-alpha.16` 和 SnowLuma 1.14.17；这不是新机器或未来版本的兼容性承诺。
+建议从 `gpt-6-luna` / `max` / 标准速度开始。Qodex 启动时会检查当前 ChatGPT 账号可用的模型和推理强度，不会自动降级到别的模型。可选 `priority` 速度可能影响与其他 Codex 使用共享的额度，也不保证固定倍率提速。首版记录的本机环境为 Node 24.18.1、`codex-cli 0.155.0-alpha.16` 和 SnowLuma 1.14.17；这不是 v0.3.0 在新机器或未来版本的兼容性承诺。
 
 ## 3. 启动与检查
 
@@ -45,30 +45,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Control.ps
 
 `Status` 和 `Verify` 用于排查运行中的本机进程与连接状态；控制台默认在 `127.0.0.1:3100`，控制接口默认在 `127.0.0.1:3110`。应先确认 SnowLuma 已连接，再从白名单中的账号或群发送测试消息。模型可判断不接话，因此请同时看控制台的会话历史和 `state/bridge.log`；若启动脚本报错，再看 `logs/windows-supervisor.log`，不要仅以“QQ 没收到回复”判断连接失败。
 
-`Control.ps1` 还接受 `Stop`、`OpenSnowLuma`、`EnableAutoStart` 和 `DisableAutoStart`。`OpenSnowLuma` 只打开 WebUI；若已配置启动器路径且 OneBot WebSocket 尚未就绪，启动 Qodex 时会尝试启动 SnowLuma。自动启动仍受 Windows 用户登录、SnowLuma/QQ 状态与网络影响。关闭控制台网页不会停止后台桥接；需要停止时执行 `-Action Stop`，它也会停止由 Qodex 自动启动的 SnowLuma。暂停按钮只暂停模型接话，期间消息保留在本机历史中；恢复后从新消息继续。
+`Control.ps1` 还接受 `Stop`、`OpenSnowLuma`、`EnableAutoStart` 和 `DisableAutoStart`。`OpenSnowLuma` 只打开 WebUI；若已配置启动器路径且 OneBot WebSocket 尚未就绪，启动 Qodex 时会尝试启动 SnowLuma。自动启动仍受 Windows 用户登录、SnowLuma/QQ 状态与网络影响。关闭控制台网页不会停止后台桥接；需要停止时执行 `-Action Stop`，它也会停止由 Qodex 自动启动的 SnowLuma。全局或当前会话的暂停状态会持久保存；暂停期间消息保留在本机历史中，恢复后从新消息继续。
 
 若希望 Qodex 同时停止 SnowLuma，请使用保持运行、直接承载程序的启动器。使用 `start` 等方式另开进程后立即退出的第三方批处理可能脱离管理；这类 SnowLuma 与手动启动的实例一样，需要自行关闭。Qodex 不会按进程名称批量结束系统中的其他程序。
 
-## 控制台模型选择与会话重置
+## 控制台与会话设置
 
-在右侧“模型选择 · 所有会话”选择当前账户可用的模型和推理强度，点击“保存模型”。保存到本部署配置，下一轮生效，无须重启；普通/Fast 速度档位保持不变，不修改 Codex 桌面端全局设置。任一会话仍在处理时会拒绝切换，请等待任务完成，或暂停后等待取消结束。
+在“全局设置”选择当前账户可用的模型和推理强度，保存到本部署配置，下一轮生效，无须重启；不会修改 Codex 桌面端全局设置。这里也可选标准/加速速度，或填写 Codex 原生上下文压缩阈值；留空使用模型默认值。当前进行中的回复继续使用它启动时的设置；若设置在打开页面后变化，保存会提示刷新重试。
 
-先在左侧选中目标群或私聊，再点击“重置当前对话上下文”并确认。它取消该会话待发送回复并放弃旧模型上下文；历史、人格、长期记忆与其他会话不受影响。下一条消息建立新会话，不重新注入重置前历史。已发出的 QQ 消息不会撤回，长期记忆仍会按设置提供给模型。
+在“当前会话独立设置”中选择左侧群或私聊；模型、推理强度、角色人格与聊天口吻可逐项继承全局，或为该会话单独指定。角色还能设为“无角色”。保存后从下一轮生效，正在执行的回复继续使用它启动时的设置。全局速度及压缩阈值对所有会话生效。“暂停当前会话”只影响选中的会话；“取消当前回复”请求中止执行中的一轮，后来排队的消息保留。运行记录可查看阶段、耗时、搜索、实际检索的记忆与发送结果；出现“取消未确认”时等任务结束或重置上下文。
 
-从 v0.1.0 升级不需要重新初始化。按下节停止、备份、更新并启动后刷新浏览器，即可看到新入口。
+先在左侧选中目标群或私聊，再点击“重置当前上下文”并确认。它取消该会话当前及排队回复并放弃旧模型上下文；历史、人格、长期记忆与其他会话不受影响。下一条消息建立新会话，不重新注入重置前历史。已发出的 QQ 消息不会撤回，长期记忆仍会按设置提供给模型。
+
+“条目记忆”支持新增、编辑、置顶、停用及恢复旧版本；置顶条目不会由模型改写。机器人回复下的“多余”“太长”“合适”反馈只作用于本会话后续表达，可在会话设置中撤销。图库可搜索、按学习状态筛选、修改备注，并全局或按会话禁用；禁用不会删除 QQ 收藏。
+
+“配置与记忆备份”可下载白名单格式 JSON，默认不带聊天历史；导入时先预览差异、勾选项目，再确认恢复。恢复前会保存快照，失败时回滚。进行中的回复会停止，未受所选恢复内容影响的空闲会话保持原上下文。此 JSON 不含本机凭据文件、登录态、图片本体或全部运行文件，可能仍包含私人聊天、人格、记忆乃至文本中的敏感信息，须妥善保管。接口和修订冲突说明见[控制台接口](CONSOLE_API.md)。
 
 ## 升级与备份
 
-升级是本机手动流程。先停服务，再把 `config.json`、整个 `state/` 和任何在 `chatMemory.directory` 中显式指定的**仓库外**记忆目录复制到安全位置。若使用默认 `state/chat-memory`，它已包含在 `state/` 备份里。不要公开备份，因为其中可能有聊天记录和令牌状态。随后在仓库根目录执行：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Control.ps1 -Action Stop
-git pull --ff-only
-npm ci
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Control.ps1 -Action Start
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Control.ps1 -Action Verify
-```
-
-如果 `git pull --ff-only` 因本地改动或分叉失败，先检查差异；不要强制重置或覆盖本地配置。Codex 登录资料由官方 Codex 单独管理，升级 Qodex 不应替换。Windows DPAPI 保护的令牌文件与当前 Windows 用户环境相关；迁移到另一台机器时请重新运行设置流程并重新输入 OneBot 令牌。
+从 v0.2.0 升级到 v0.3.0 会改变记忆文件格式。先停止进程，备份**整个旧部署目录及外部记忆目录**，再更新。完整步骤、迁移检查与配套回退方式见[v0.3.0 升级与回退指南](UPGRADE_V030.md)。仅下载控制台 JSON 不能完成整套部署回退。若 `git pull --ff-only` 因本地改动或分叉失败，先检查差异；不要强制重置或覆盖本地数据。Codex 登录资料由官方 Codex 单独管理，Windows DPAPI 令牌状态与当前 Windows 用户环境相关。
 
 故障定位见[排查指南](TROUBLESHOOTING.md)，配置含义见[配置说明](CONFIGURATION.md)。

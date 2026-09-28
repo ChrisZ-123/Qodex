@@ -1,0 +1,28 @@
+# v0.3.0 本机控制台接口
+
+这些接口由 Qodex 控制台使用，监听本机回环地址，不是公开的远程服务协议。请优先使用图形控制台；下表用于说明保存内容、修订冲突和备份边界。请求需通过控制台令牌鉴权；写请求须使用 `application/json`，带 `Origin` 时只接受本机同源页面。不要把令牌、完整请求或私人数据贴到 Issue 中。
+
+| 路径与方法 | 用途与关键参数 |
+| --- | --- |
+| `GET /api/chat`、`GET /api/chat?key=group:10001` | 会话列表与分页历史；示例 ID 为虚构数据。 |
+| `GET/POST /api/chat/models` | 获取当前账号可用模型及全局模型设置；POST 使用返回的 `revision`，提交 `model`、`reasoningEffort`，可带 `serviceTier`（`null` 标准、`priority` 加速）和 `autoCompactTokenLimit`（`null` 模型默认，或 8,000–1,000,000 token）。模型/强度从下一轮起作用于继承全局的会话；速度和压缩阈值从下一轮起作用于所有会话。 |
+| `GET/POST /api/chat/settings` | 使用 `key` 读取或写入当前会话的 `patch`。`role:null` 继承、`role:false` 明确无角色、字符串选择角色；`style:null` 继承；`model:null` 继承，或填 `{model,reasoningEffort}`。还可设置该会话 `paused`。 |
+| `POST /api/chat/pause`、`POST /api/chat/cancel`、`POST /api/chat/reset` | `pause` 的 `paused` 为布尔值，省略 `key` 作用于全局；`cancel` 只请求终止当前轮并保留后来排队消息；`reset` 清除所选会话的待发送回复及模型上下文，但保留历史与记忆。 |
+| `GET /api/chat/runs?key=group:10001` | 返回该会话最近的运行记录及当前排队数量。运行记录包含阶段、模型与推理强度、时间、搜索、使用的记忆、QQ 发送结果和脱敏错误；每会话最多保留最近 100 轮。 |
+| `GET/POST /api/chat/memory` | 每会话 schema 2 条目记忆。POST 带 `key`、整体 `revision`；`action:add/edit/restore/toggle`，编辑和恢复另带条目的 `id`、`version`，恢复带 `restoreVersion`。保留旧版整体文本编辑兼容入口。 |
+| `GET/POST /api/chat/feedback` | 当前会话机器人回复的“多余”“太长”“合适”反馈；新增须引用已有机器人回复的 `messageId`（控制台历史条目 ID），撤销用 `action:"undo"` 和反馈 `id`。 |
+| `GET/POST /api/chat/gallery` | 搜索表情描述、备注、标签与用途；POST 带 `id`、`disabled`、`revision`，省略 `key` 为全局禁用，指定 `key` 为该会话禁用。不会删除 QQ 收藏。 |
+| `GET /api/chat/sticker-preview`、`POST /api/chat/sticker-note` | 本机图库缩略图与备注；备注写入带 `expectedNote`、`expectedSource`，避免覆盖其他已保存修改。 |
+| `GET/POST /api/chat/expression` | 全局口吻、表情发送、看图学习和自动收藏开关；POST 带当前 `revision`。 |
+| `GET /api/chat/backup?history=0|1` | 导出 `qq-codex-backup` v1 JSON；默认不含聊天历史，`history=1` 才包含。 |
+| `POST /api/chat/backup/preview`、`POST /api/chat/backup/restore` | 预览传 `{backup:<JSON 对象>}`，返回差异与 10 分钟有效的 `id`；恢复传 `{id,sections:[...]}`，只应用选中的章节。 |
+
+## 修订与冲突
+
+会话设置、反馈、图库等共用 `state/model-preferences.json` 的**整数** `revision`。先读取，再带当前修订号写入；其他操作修改后，旧号返回 HTTP **409**，重新读取并确认差异后重试。记忆有独立的整体 `revision`，编辑/恢复已有条目还要带该条目的 `version`。全局模型和表达设置各有自己的 `revision`，由相应 GET 原样返回，写回时勿自行拼接。表情备注用当前备注文本与来源作冲突检查。备份预览之后若当前资料变化，恢复返回 409，需重新预览。无效模型、记忆文本或备份格式等一般返回 400；未授权返回 401，跨站来源被拒绝返回 403，错误响应含 `ok:false` 和 `error`。
+
+## 记忆与备份格式
+
+记忆文件 `schemaVersion:2`，按会话保存 `key`、`enabled`、整体 `revision` 与 `entries`。条目有 `id`、`text`、`pinned`、`enabled`、`version`、`source`、`versions` 等字段。首次读取旧格式时，会将原文件保留为 `memory.json.legacy-v1.json`，再写入新版。模型只能修改本轮检索可见、未置顶且来源可核对的普通条目。每会话有效记忆总量上限 30,000 字符；本地中文分词和 BM25 负责按需检索，置顶内容优先。
+
+导出 JSON 的顶层为 `format:"qq-codex-backup"`、`version:1`、`createdAt` 和 `sections`。支持的章节是 `settings`、`roles`、`conversations`、`memory`、`feedback`、`stickers`、`history`；最后一项只有勾选历史时才出现。导入只接受这些章节与经过校验的会话 ID、角色名、记忆条目和当前账号可用模型。恢复前自动将本机快照写到 `state/restore-snapshots/`，执行中停止进行中的回复，失败时尝试回滚；有数据变化的相关空闲会话才重建模型上下文，单纯恢复表情备注或反馈不重置无关空闲会话。历史恢复不会重发 QQ 消息。JSON 排除本机凭据文件、Codex 登录态、图片本体与会话绑定，但可能包含私人对话、角色、记忆以及未被自动识别的敏感文本。它不能代替升级前的[完整目录备份](UPGRADE_V030.md)。

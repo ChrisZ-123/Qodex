@@ -27,6 +27,17 @@ try{
  assert.equal((await (await request('/api/chat/memory?key=group%3A789')).json()).content,'');
  assert.equal((await request('/api/chat/memory',{key:'group:456',content:'过期修改',enabled:true,revision:memory.revision})).status,409);
  assert.equal((await request('/api/chat/memory?key=..%2Fconfig')).status,400);
+ const initialExpression=await(await request('/api/chat/expression')).json();
+ assert.equal(initialExpression.imageMode,'requested');assert.equal(initialExpression.stickerStyle,'natural');
+ assert.equal((await request('/api/chat/expression',{style:'简洁自然',stickersEnabled:true,imageMode:'auto',stickerStyle:'lively'})).status,200);
+ const changedExpression=await(await request('/api/chat/expression')).json();
+ assert.equal(changedExpression.imageMode,'auto');assert.equal(changedExpression.stickerStyle,'lively');
+ assert.equal((await request('/api/chat/expression',{style:'简洁自然',stickersEnabled:true,imageMode:'invalid'})).status,400);
+ const scoped=await(await request('/api/chat/settings?key=group%3A456')).json();
+ assert.equal(scoped.override.imageMode,null);assert.equal(scoped.override.stickerStyle,null);
+ assert.equal((await request('/api/chat/settings',{key:'group:456',revision:scoped.revision,patch:{imageMode:'off',stickerStyle:'natural'}})).status,200);
+ const scopedAfter=await(await request('/api/chat/settings?key=group%3A456')).json();
+ assert.equal(scopedAfter.effective.imageMode,'off');assert.equal(scopedAfter.effective.stickerStyle,'natural');
  assert.equal((await request('/api/chat/expression',{style:'简洁自然',stickersEnabled:false})).status,200);
  assert.equal((await (await request('/api/chat/expression')).json()).stickersEnabled,false);
  assert.equal((await request('/api/chat/expression',{style:'简洁自然',stickersEnabled:true,autoCollectStickers:false})).status,200);

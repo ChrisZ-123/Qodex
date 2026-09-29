@@ -3,6 +3,7 @@ const steps=[
   [process.execPath,['scripts/test-audit.mjs']],
   [process.execPath,['scripts/test-portable-memory.mjs']],
   [process.execPath,['scripts/test-upgrade-v030.mjs']],
+  [process.execPath,['scripts/test-upgrade-v040.mjs']],
 ];
 if(process.platform==='win32')steps.push(['powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File','scripts/test-windows-deployment.ps1']]);
 else console.log('Windows deployment tests require Windows; only core tests will run on this platform.');

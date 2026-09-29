@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {bridgeHarness} from './audit-bridge-harness.mjs';
 const h=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max',serviceTier:'priority'}}});
 try{
@@ -50,3 +51,30 @@ try{
  assert.equal(fs.existsSync(path.join(custom.temp,'state','chat-memory')),false);
  console.log('PASS backup restore follows custom memory directory with Chinese and spaces');
 }finally{await custom.close();}
+
+const images=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max'}}});
+try{
+ fs.mkdirSync(path.join(images.temp,'roles'),{recursive:true});
+ const key='group:456',entry=images.modelChat.entry(key),imageId=crypto.randomUUID(),runId=crypto.randomUUID();
+ entry.sessionId='kept-context';entry.images=[{imageId,runId,mimeType:'image/png',extension:'png',bytes:64,createdAt:'2026-09-29T00:00:00Z',status:'sent',sentMessageId:'77'}];
+ images.modelChat.append(key,{kind:'assistant',sender:'机器人',text:'[生成图片]',imageId});
+ images.modelChat.save(entry);
+ const exported=images.chatBackup.export(true);
+ assert.equal(exported.sections.images[key][0].imageId,imageId);
+ assert.equal(exported.sections.history[key].at(-1).imageId,imageId);
+ assert(!JSON.stringify(exported).includes('data:image/png;base64,'));
+ const old=structuredClone(exported);delete old.sections.images;
+ delete old.sections.settings.expression.imageMode;delete old.sections.settings.expression.stickerStyle;
+ for(const override of Object.values(old.sections.conversations)){delete override.imageMode;delete override.stickerStyle;}
+ const models=await images.api.listModels();
+ const normalized=images.chatBackup.validate(old,models);
+ assert.equal(normalized.sections.settings.expression.imageMode,'requested');
+ assert.equal(normalized.sections.settings.expression.stickerStyle,'natural');
+ assert.equal(normalized.sections.conversations[key].imageMode,null);
+ assert.equal(normalized.sections.conversations[key].stickerStyle,null);
+ const preview=images.chatBackup.preview(exported,models);
+ await images.chatBackup.restore(preview.id,['images']);
+ assert.equal(images.modelChat.entry(key).images[0].imageId,imageId);
+ assert.equal(images.modelChat.entry(key).sessionId,'kept-context');
+ console.log('PASS v0.3 backup defaults and v0.4 image metadata restore without resetting context');
+}finally{await images.close();}

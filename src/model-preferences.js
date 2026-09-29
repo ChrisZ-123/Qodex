@@ -5,7 +5,9 @@ const validKey=key=>/^(group|private):[1-9]\d*$/.test(key);
 const validSticker=id=>typeof id==='string'&&/^[\w:.-]{1,160}$/.test(id);
 const clone=value=>structuredClone(value);
 const empty=()=>({schemaVersion:1,revision:0,paused:false,globalDisabledStickers:[],conversations:{}});
-const blank=()=>({role:null,style:null,model:null,paused:false,disabledStickers:[],feedback:[]});
+const blank=()=>({role:null,style:null,model:null,imageMode:null,stickerStyle:null,paused:false,disabledStickers:[],feedback:[]});
+const IMAGE_MODES=['off','requested','auto'];
+const STICKER_STYLES=['natural','lively'];
 const conflict=()=>Object.assign(new Error('设置已被其他操作更新，请刷新后重试'),{statusCode:409});
 
 export class ModelPreferences {
@@ -33,6 +35,8 @@ export class ModelPreferences {
       if(m!==null&&!(m&&typeof m==='object'&&models?.some(x=>x.model===m.model&&x.efforts.includes(m.reasoningEffort))))throw new Error('请选择账户可用的模型及推理强度');
       current.model=m===null?null:{model:m.model,reasoningEffort:m.reasoningEffort};
     }
+    if(Object.hasOwn(patch,'imageMode')){if(patch.imageMode!==null&&!IMAGE_MODES.includes(patch.imageMode))throw new Error('图片生成模式无效');current.imageMode=patch.imageMode;}
+    if(Object.hasOwn(patch,'stickerStyle')){if(patch.stickerStyle!==null&&!STICKER_STYLES.includes(patch.stickerStyle))throw new Error('表情表达倾向无效');current.stickerStyle=patch.stickerStyle;}
     if(Object.hasOwn(patch,'paused')){
       if(typeof patch.paused!=='boolean')throw new Error('暂停状态无效');current.paused=patch.paused;
     }
@@ -53,9 +57,9 @@ export class ModelPreferences {
   }
   stickerAllowed(key,id){return !this.data.globalDisabledStickers.includes(id)&&!this.conversation(key).disabledStickers.includes(id);}
   isPaused(key){return this.data.paused||this.conversation(key).paused;}
-  effective(key,{model,reasoningEffort,role,style,serviceTier=null,autoCompactTokenLimit=null}){
+  effective(key,{model,reasoningEffort,role,style,imageMode='requested',stickerStyle='natural',serviceTier=null,autoCompactTokenLimit=null}){
     const c=this.conversation(key);
-    return {model:c.model?.model??model,reasoningEffort:c.model?.reasoningEffort??reasoningEffort,role:c.role===null?role:c.role,style:c.style??style,serviceTier,autoCompactTokenLimit,paused:this.isPaused(key),feedback:this.feedbackHint(key)};
+    return {model:c.model?.model??model,reasoningEffort:c.model?.reasoningEffort??reasoningEffort,role:c.role===null?role:c.role,style:c.style??style,imageMode:c.imageMode??imageMode,stickerStyle:c.stickerStyle??stickerStyle,serviceTier,autoCompactTokenLimit,paused:this.isPaused(key),feedback:this.feedbackHint(key)};
   }
   feedbackHint(key){
     const items=this.conversation(key).feedback.filter(x=>x.active);

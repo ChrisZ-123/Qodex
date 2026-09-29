@@ -25,7 +25,7 @@ function Invoke-ModelCheck([string]$Exe, [string]$Node) {
     $env:QBOT_CODEX_EXE = $Exe
     try {
         $output = & $Node (Join-Path $root 'scripts\runtime-check.mjs') 2>$null
-        if ($LASTEXITCODE -ne 0) { throw 'Codex 当前账户不可用。请先在官方 Codex 中登录，再运行 Setup.ps1。' }
+        if ($LASTEXITCODE -ne 0) { throw 'Qodex 独立 Codex 账户不可用。请先运行 scripts/windows/Login-Codex.ps1 完成官方登录，再运行 Setup.ps1。' }
         return (($output -join "`n") | ConvertFrom-Json)
     } finally { Remove-Item Env:QBOT_CODEX_EXE -ErrorAction SilentlyContinue }
 }

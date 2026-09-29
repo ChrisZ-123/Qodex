@@ -26,7 +26,7 @@ $script:outputBox = New-Object Windows.Forms.TextBox
 $script:outputBox.Multiline = $true
 $script:outputBox.ReadOnly = $true
 $script:outputBox.ScrollBars = 'Vertical'
-$script:outputBox.SetBounds(25, 218, 710, 235)
+$script:outputBox.SetBounds(25, 264, 710, 189)
 $script:outputBox.Text = '请先确认 SnowLuma 已登录 QQ，且 OneBot HTTP 与 WebSocket 已在本机启用。'
 $form.Controls.Add($script:outputBox)
 $note = New-Object Windows.Forms.Label
@@ -41,7 +41,19 @@ function Start-ControlAction([string]$Action) {
     if ($script:worker) { return }
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = Join-Path $PSHOME 'powershell.exe'
-    $info.Arguments = '-NoProfile -ExecutionPolicy Bypass -STA -File "' + (Join-Path $root 'scripts\windows\Control.ps1') + '" -Action ' + $Action
+    if ($Action -eq 'LoginCodex') {
+        $info.Arguments = '-NoProfile -ExecutionPolicy Bypass -STA -File "' + (Join-Path $root 'scripts\windows\Login-Codex.ps1') + '"'
+        $info.UseShellExecute = $true
+        $info.WindowStyle = [Diagnostics.ProcessWindowStyle]::Normal
+        $info.WorkingDirectory = $root
+        $script:worker = [Diagnostics.Process]::Start($info)
+        $script:workerAction = $Action
+        foreach ($button in $script:buttons) { $button.Enabled = $false }
+        $script:outputBox.Text = '已打开独立 Codex 登录窗口。请在该窗口中完成官方登录，然后回到这里检查状态。'
+        return
+    } else {
+        $info.Arguments = '-NoProfile -ExecutionPolicy Bypass -STA -File "' + (Join-Path $root 'scripts\windows\Control.ps1') + '" -Action ' + $Action
+    }
     $info.WorkingDirectory = $root
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
@@ -55,7 +67,8 @@ function Start-ControlAction([string]$Action) {
 
 $entries = @(
     @('启动 Qodex', 'Start'), @('停止 Qodex', 'Stop'), @('检查状态', 'Status'), @('验证连接', 'Verify'),
-    @('打开控制台', 'OpenConsole'), @('打开 SnowLuma', 'OpenSnowLuma'), @('启用登录自启', 'EnableAutoStart'), @('关闭登录自启', 'DisableAutoStart')
+    @('打开控制台', 'OpenConsole'), @('打开 SnowLuma', 'OpenSnowLuma'), @('启用登录自启', 'EnableAutoStart'), @('关闭登录自启', 'DisableAutoStart'),
+    @('登录 Codex（独立）', 'LoginCodex')
 )
 for ($i = 0; $i -lt $entries.Count; $i++) {
     $button = New-Object Windows.Forms.Button
@@ -70,6 +83,13 @@ $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 250
 $timer.Add_Tick({
     if (-not $script:worker -or -not $script:worker.HasExited) { return }
+    if ($script:workerAction -eq 'LoginCodex') {
+        $script:outputBox.Text = if ($script:worker.ExitCode -eq 0) { '独立 Codex 登录已完成。请单击“验证连接”检查本部署账号与模型。' } else { '独立 Codex 登录未完成。可再次登录，或在终端运行 Login-Codex.ps1 查看提示。' }
+        $script:worker.Dispose()
+        $script:worker = $null
+        foreach ($button in $script:buttons) { $button.Enabled = $true }
+        return
+    }
     $out = $script:worker.StandardOutput.ReadToEnd().Trim()
     $err = $script:worker.StandardError.ReadToEnd().Trim()
     if ($script:worker.ExitCode -eq 0) {

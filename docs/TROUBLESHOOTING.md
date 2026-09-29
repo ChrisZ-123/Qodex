@@ -11,11 +11,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Control.ps
 | --- | --- |
 | `Setup.ps1` 提示找不到 Node 或版本不足 | Windows 安装脚本要求 Node.js 24 或更新。安装后重新打开 PowerShell，再运行 `node --version` 与 `npm ci`。 |
 | 找不到 Codex 或选中了 `codex.cmd` | 安装官方 Codex 桌面版或 CLI，在安装向导中给出原生 `codex.exe` 完整路径。仅有 npm 的 `.cmd` 包装器不能满足此部署流程。 |
-| Codex 账号或模型不可用 | 用运行 Qodex 的同一 Windows 用户在官方 Codex 中登录 ChatGPT 账号。API key 鉴权不支持。向导/启动会检查模型与推理强度；选择当前账号实际列出的组合。不会自动更换模型。 |
+| Codex 账号或模型不可用 | 停止本部署，运行 `scripts/windows/Login-Codex.ps1` 完成 Qodex 独立目录的官方 ChatGPT 登录，再运行 `Setup.ps1` 检查模型。桌面端已登录不代表本部署已登录；API key 鉴权不支持，也不会自动换模型。 |
+| `thread already has an active writer` 或旧会话不能恢复 | 确认正在使用本部署 `state/codex-home`；升级用户按[v0.4 升级指南](UPGRADE_V040.md)完成独立登录，并在**停止本部署**后选择迁移机器人映射的旧原生会话。不要删除锁文件或复制登录凭据。迁移失败会保留原映射与源文件。 |
 | 桥接启动了但 QQ 没有会话 | 确认 SnowLuma 已登录 QQ、启用 OneBot WebSocket 服务端、URL 与令牌一致；确认目标群/私聊在白名单，黑名单没有覆盖。白名单为空时默认不放行。 |
 | 会话里有消息，却没有 QQ 回复 | 看控制台是否暂停、模型是否选择不接话、是否有“模型请求失败”或“QQ 发送失败”事件。模型会根据群聊上下文保持安静，不能以无回复单独判断为故障。暂停期间的消息不会在恢复后自动补交。 |
 | HTTP 426、发送表情或同步收藏失败 | `snowluma.httpUrl` 应指向 OneBot **HTTP API**，不是 WebSocket 的 3001 端口；检查 SnowLuma 的 HTTP 服务、access token 和本机回环地址。 |
 | 图片未被自动收藏 | 仅允许群中由 OneBot 明确标记为表情的图片会进入自动收藏；普通图片和私聊图片不会。达到 100 张时暂停新增。可在控制台检查表情设置并手动同步 QQ 收藏。 |
+| 生图未触发或引用改图失败 | 检查本会话实际 `imageMode`；公开默认仅处理明确的生图/改图请求。引用图只允许来自当前会话且能读取的消息；失败时重新发送原图。查看运行记录中的排队、生成、取消与发送阶段，不会自动重试。 |
+| 备份恢复后图片显示不可用 | JSON 只含生成图片元数据，不含 `state/generated-images` 文件；从完整目录备份恢复对应文件，保持会话路径和文件名。不要从其他群借用图片。 |
+| 合并转发只有部分内容 | 控制台历史会标出读取失败或截断；当前上限为三层、八份、一百节点、两万字符、五张图片和十五秒。OneBot 可能已展平内层记录，无法据此判断真实递归是否发生。 |
 | 控制台打不开或提示未授权 | 用 `Control.ps1 -Action OpenConsole` 打开页面，将本机弹窗中的令牌复制到浏览器登录表单；检查控制台端口、进程状态及是否在正确的 Windows 用户下运行。不要把令牌或带令牌的访问链接分享出去。 |
 | `state/secrets.dpapi` 无法解密 | 该文件受创建它的 Windows 用户环境保护。回到原用户运行；迁移机器时备份聊天数据后，安全重新初始化并输入 OneBot 令牌。不要把它改成明文 JSON。 |
 | 端口占用 | `Setup.ps1` 会检查 WebUI、OneBot、控制台与控制服务端口是否不同。确认占用程序并在配置中选另一可用端口，重启后验证。 |

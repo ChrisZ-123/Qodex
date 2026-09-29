@@ -4,7 +4,7 @@ import {fileURLToPath} from 'node:url';
 import yaml from 'js-yaml';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
-import {CodexRpc} from './codex-rpc.js';
+import {CodexRpc,BOT_CODEX_HOME} from './codex-rpc.js';
 import {MODEL_CHAT_INSTRUCTIONS} from './model-chat.js';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
@@ -15,6 +15,7 @@ export class CodexApiClient {
   constructor(config) {
     this.root=root;this.config=config;this.records=read(path.join(this.root,'state/codex-sessions.json'),{});
     this.live=new Set();this.active=new Map();this.queues=new Map();this.frames=[];this.tools=new Map();this.cancelled=new Set();
+    this.imageQueue=[];this.imageActive=null;this.imageJobs=new Map();
     this.rpc=new CodexRpc({exe:config.exe,cwd:root,onNotification:(m,p)=>this.notify(m,p),onRequest:(m,p)=>this.toolCall(m,p)});
     this.ready=this.initialize();
     this.events={follow:()=>{},mux:()=>this.mux()};
@@ -31,7 +32,7 @@ export class CodexApiClient {
   async initialize() {
     await this.rpc.initialize();
     const account=await this.rpc.request('account/read',{});
-    if(account.account?.type!=='chatgpt')throw new Error('QQ Codex requires the existing ChatGPT login');
+    if(account.account?.type!=='chatgpt')throw new Error('机器人独立 Codex 尚未登录，请使用启动页的登录 Codex 入口');
     const models=await this.readModelCatalog();
     const model=models.find(m=>m.model===this.config.model);
     if(!model?.supportedReasoningEfforts.some(e=>e.reasoningEffort===this.config.reasoningEffort))throw new Error('Requested Codex model/effort is unavailable; no fallback permitted');
@@ -83,7 +84,9 @@ export class CodexApiClient {
     if(!this.records[id])throw new Error('Session is not owned by this QQ deployment');
     if(!this.live.has(id)||(this.records[id].autoCompactTokenLimit??null)!==autoCompactTokenLimit){
       if(this.active.has(id))throw new Error('Context settings will apply after the active turn');
-      await this.rpc.request('thread/resume',{threadId:id,model:this.records[id].model??this.config.model,serviceTier:this.config.serviceTier,config:autoCompactTokenLimit==null?{}:{model_auto_compact_token_limit:autoCompactTokenLimit},cwd:this.agentCwd(),sandbox:'read-only',approvalPolicy:'never',baseInstructions:this.instructions(this.records[id].preset)});
+      const imported=this.records[id].rolloutPath;
+      if(imported&&!path.resolve(imported).startsWith(path.resolve(BOT_CODEX_HOME,'sessions')+path.sep))throw new Error('机器人拒绝恢复独立目录以外的会话');
+      await this.rpc.request('thread/resume',{threadId:id,...(imported?{path:imported}:{}),model:this.records[id].model??this.config.model,serviceTier:this.config.serviceTier,config:autoCompactTokenLimit==null?{}:{model_auto_compact_token_limit:autoCompactTokenLimit},cwd:this.agentCwd(),sandbox:'read-only',approvalPolicy:'never',baseInstructions:this.instructions(this.records[id].preset)});
       this.records[id].autoCompactTokenLimit=autoCompactTokenLimit;this.save();
       this.live.add(id);
     }
@@ -122,11 +125,30 @@ export class CodexApiClient {
   emit(sessionId,type,data){const requestId=data.turn?this.turnRequestIds?.get(data.turn):null;this.frames.push({payload:{type:'session/event',sessionId,event:{type,data:{...data,...(requestId?{requestId}:{})}}}});this.wake?.();this.wake=null;}
   notify(method,p){
     if(method==='connection/lost'){
+      if(this.imageActive)this.imageActive.innerReject?.(new Error('Codex 图片生成连接中断'));
+      for(const job of this.imageQueue)job.fail(new Error('Codex 图片生成连接中断'));
+      this.imageQueue=[];this.imageActive=null;this.imageJobs.clear();
       this.queues.clear();
       for(const [id,turn] of this.active)this.emit(id,'turn/end',{turn,reason:{kind:'aborted'}});
       this.active.clear();return;
     }
     const id=p?.threadId;
+    const imageJob=this.imageJobs.get(id);
+    if(imageJob){
+      if(method==='item/started'&&p.item?.type==='imageGeneration')imageJob.onStatus?.('generating');
+      if(method==='item/completed'&&p.item?.type==='imageGeneration'){
+        if(p.item.status==='completed'&&!p.item.failure)imageJob.results.push({savedPath:p.item.savedPath??null,result:p.item.result??''});
+        else imageJob.failure=p.item.failure?.type??p.item.status??'failed';
+      }
+      if(method==='turn/completed'){
+        if(imageJob.timedOut)imageJob.innerReject?.(new Error('图片生成超时，未自动重试'));
+        else if(imageJob.cancelled)imageJob.innerReject?.(new Error('图片生成已取消'));
+        else if(p.turn.status!=='completed')imageJob.innerReject?.(new Error(p.turn.error?.message||'原生图片生成失败'));
+        else if(!imageJob.results.length)imageJob.innerReject?.(new Error(imageJob.failure?`原生图片生成失败：${imageJob.failure}`:'原生图片生成没有返回图片'));
+        else imageJob.innerResolve?.(imageJob.results[0]); // Native tool can return variants; this bridge sends exactly one.
+      }
+      return;
+    }
     const eventTurn=p?.turnId??p?.turn?.id;
     if(eventTurn&&this.turnRequestIds?.has(eventTurn)&&this.turnRequestIds.get(eventTurn)!==this.pendingRequestIds?.get(id))return;
     if(method==='item/started'&&p.item?.type==='contextCompaction')this.emit(id,'context/compact/start',{turn:p.turnId});
@@ -154,5 +176,38 @@ export class CodexApiClient {
   }
   async *mux(){await this.ready;for(;;){while(this.frames.length)yield this.frames.shift();await new Promise(r=>this.wake=r);}}
   async stopSessionWork(id){this.cancelled.add(id);this.queues.delete(id);const turnId=this.active.get(id);if(turnId)await this.rpc.request('turn/interrupt',{threadId:id,turnId});}
+  generateImage({requestId,prompt,sourceImages=[],model,reasoningEffort,serviceTier,onStatus}){
+    if(typeof requestId!=='string'||typeof prompt!=='string'||!prompt.trim()||prompt.length>2000||!Array.isArray(sourceImages)||sourceImages.length>3||sourceImages.some(x=>x.type!=='image'||typeof x.data!=='string'||!/^image\/(png|jpeg|webp)$/.test(x.mediaType)||x.data.length>20_000_000))return Promise.reject(new Error('图片请求或参考图无效'));
+    return new Promise((resolve,reject)=>{const job={requestId,prompt,sourceImages,model,reasoningEffort,serviceTier,onStatus,finish:resolve,fail:reject,results:[],cancelled:false};this.imageQueue.push(job);onStatus?.('queued');void this.pumpImages();});
+  }
+  async pumpImages(){
+    if(this.imageActive||!this.imageQueue.length)return;
+    const job=this.imageQueue.shift();this.imageActive=job;
+    let timer;
+    try{
+      await this.ready;
+      if(job.cancelled)throw new Error('图片生成已取消');
+      const t=await this.rpc.request('thread/start',{ephemeral:true,model:job.model,serviceTier:job.serviceTier,allowProviderModelFallback:false,config:{features:{image_generation:true}},cwd:this.agentCwd(),environments:[],selectedCapabilityRoots:[],sandbox:'read-only',approvalPolicy:'never',baseInstructions:'You create or edit exactly one image with the native image generation tool. The bridge has approved this request and provided any reference image. Use no shell, code, external service, or QQ tool. Do not substitute unrelated images if the supplied reference is unavailable.',dynamicTools:[]});
+      if(job.cancelled)throw new Error('图片生成已取消');
+      job.threadId=t.thread.id;this.imageJobs.set(job.threadId,job);
+      const input=[{type:'text',text:`请用原生图片生成工具完成一张图片。需求：${job.prompt}。如附有参考图，请在其基础上修改；只生成一张，不执行代码或调用外部服务。`,text_elements:[]},...job.sourceImages.map(x=>({type:'image',url:`data:${x.mediaType};base64,${x.data}`}))];
+      const completion=new Promise((resolve,reject)=>{job.innerResolve=resolve;job.innerReject=reject;});
+      const started=await this.rpc.request('turn/start',{threadId:job.threadId,model:job.model,effort:job.reasoningEffort,serviceTier:job.serviceTier,serviceTierForTurn:job.serviceTier??'default',environments:[],input},60000);
+      job.turnId=started.turn.id;
+      if(job.cancelled)await this.rpc.request('turn/interrupt',{threadId:job.threadId,turnId:job.turnId});
+      timer=setTimeout(()=>{job.timedOut=true;job.onStatus?.('timeout');void this.rpc.request('turn/interrupt',{threadId:job.threadId,turnId:job.turnId}).catch(()=>{});},180000);
+      const image=await completion;
+      job.finish(image);
+    }catch(error){job.fail(error);}
+    finally{clearTimeout(timer);if(job.threadId)this.imageJobs.delete(job.threadId);this.imageActive=null;void this.pumpImages();}
+  }
+  async cancelImage(requestId){
+    const queued=this.imageQueue.find(x=>x.requestId===requestId);
+    if(queued){this.imageQueue=this.imageQueue.filter(x=>x!==queued);queued.cancelled=true;queued.fail(new Error('图片生成已取消'));return;}
+    const job=this.imageActive;if(!job||job.requestId!==requestId)return;
+    job.cancelled=true;
+    if(job.threadId&&job.turnId)await this.rpc.request('turn/interrupt',{threadId:job.threadId,turnId:job.turnId});
+    // Hold the single image slot until the native turn confirms termination.
+  }
   async respond(){throw new Error('Interactive approvals are disabled for the QQ bot');}
 }

@@ -1,7 +1,17 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
+import fs from 'node:fs';
+import {fileURLToPath} from 'node:url';
 
-// Authentication stays in the existing official Codex credential store.
+export const BOT_CODEX_HOME=fileURLToPath(new URL('../state/codex-home/',import.meta.url));
+export function codexEnvironment(source=process.env){
+  const env={...source};
+  for(const k of Object.keys(env))if(k.startsWith('QBOT_')||k.startsWith('SNOWLUMA_')||k.startsWith('CODEX_')||['OPENAI_API_KEY','OPENAI_BASE_URL','CHATGPT_TOKEN'].includes(k))delete env[k];
+  env.CODEX_HOME=BOT_CODEX_HOME;
+  return env;
+}
+
+// Bot authentication and runtime state use an independent official Codex home.
 // All overrides are process-local; the user's desktop configuration is untouched.
 export const isolatedConfig = {
   mcp_servers: {}, plugins: {},
@@ -28,12 +38,12 @@ function toml(value) {
   return JSON.stringify(value);
 }
 export class CodexRpc {
-  constructor({exe, cwd, onNotification = () => {}, onRequest = async () => { throw new Error('Tool not permitted'); }} = {}) {
+  constructor({exe, cwd, imageGeneration = false, onNotification = () => {}, onRequest = async () => { throw new Error('Tool not permitted'); }} = {}) {
     this.pending = new Map(); this.id = 0;
     const args = ['app-server', '--stdio'];
-    for (const [k,v] of Object.entries(isolatedConfig)) args.push('-c',`${k}=${toml(v)}`);
-    const env = {...process.env};
-    for (const k of Object.keys(env)) if (k.startsWith('QBOT_') || k.startsWith('SNOWLUMA_') || (k.startsWith('CODEX_') && k !== 'CODEX_HOME')) delete env[k];
+    for (const [k,v] of Object.entries(isolatedConfig)) args.push('-c',`${k}=${toml(k==='features'?{...v,image_generation:imageGeneration}:v)}`);
+    fs.mkdirSync(BOT_CODEX_HOME,{recursive:true});
+    const env = codexEnvironment();
     this.child = spawn(exe || process.env.QBOT_CODEX_EXE || 'codex', args, {cwd, env, windowsHide:true, stdio:['pipe','pipe','pipe']});
     this.child.stderr.resume(); // Never expose credential-bearing diagnostics.
     readline.createInterface({input:this.child.stdout}).on('line',line => {

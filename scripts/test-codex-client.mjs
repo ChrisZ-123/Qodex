@@ -89,3 +89,16 @@ console.log('PASS Codex model pinning, owned-session boundary, tool allowlist, q
  c.rpc.request=async(method,params)=>method==='account/read'?{account:{type:'chatgpt'}}:params.cursor?{data:[{model:'gpt-6-luna',supportedReasoningEfforts:[{reasoningEffort:'max'}]}],nextCursor:null}:{data:[],nextCursor:'second'};
  await c.initialize();console.log('PASS startup validates a selected model beyond the first catalog page');
 }
+
+{
+ const {codexEnvironment,BOT_CODEX_HOME}=await import('../src/codex-rpc.js');
+ const env=codexEnvironment({CODEX_HOME:'desktop-home',CODEX_SESSION_ID:'desktop-session',QBOT_CONSOLE_TOKEN:'fixture-secret',OPENAI_API_KEY:'fixture-secret',PATH:'kept'});
+ assert.equal(env.CODEX_HOME,BOT_CODEX_HOME);
+ assert.equal(env.CODEX_SESSION_ID,undefined);
+ assert.equal(env.QBOT_CONSOLE_TOKEN,undefined);
+ assert.equal(env.OPENAI_API_KEY,undefined);
+ assert.equal(env.PATH,'kept');
+ const c=fixture();c.live.clear();c.records.owned.rolloutPath=path.join(os.tmpdir(),'outside-codex-home','sessions','foreign.jsonl');
+ await assert.rejects(c.ensure('owned'),/独立目录以外/);assert.equal(c.calls.length,0);
+ console.log('PASS independent Codex home and out-of-bound session refusal');
+}

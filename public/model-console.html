@@ -10,13 +10,30 @@
 'use strict';
 const $=id=>document.getElementById(id),token=new URLSearchParams(location.search).get('token')||sessionStorage.getItem('qq-console-token')||'';if(token)sessionStorage.setItem('qq-console-token',token);
 let selected='',chatList=[],paused=false,before=0,lastSignature='',listSignature='',busy=false,noticeTimer,memoryKey='',memoryRevision=0,memoryDirty=false;
-const labels={thinking:'正在思考',searching:'正在搜索',sending:'正在发送',idle:'等待新消息',paused:'已暂停'};
+const labels={readingForward:'读取合并转发',thinking:'正在思考',searching:'正在搜索',sending:'正在发送',idle:'等待新消息',paused:'已暂停'};
 async function api(url,body){const r=await fetch(url,{method:body===undefined?'GET':'POST',headers:{'x-console-token':token,...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});let v;try{v=await r.json()}catch{throw Error('服务响应异常，请从 PowerShell 启动页重新打开控制台')}if(!r.ok||v.ok===false)throw Error(v.error||'请求失败');return v}
 function toast(s){$('notice').textContent=s;$('notice').hidden=false;clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>$('notice').hidden=true,4500)}
 function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n}
 function title(key){const [kind,id]=key.split(':');return (kind==='group'?'群聊 ':'私聊 ')+id}
 function renderList(){const root=$('sessions');root.replaceChildren();$('sessionCount').textContent=chatList.length;for(const c of chatList){const b=el('button',undefined,'session'+(c.key===selected?' active':''));b.setAttribute('aria-pressed',String(c.key===selected));b.append(el('strong',title(c.key)),el('small',c.last?.text||'尚无消息'));const meta=el('span',undefined,'meta');meta.append(el('span',c.allowed?(labels[c.status]||c.status):'未放行'),el('span',c.pending?`${c.pending} 条待处理`:`${c.count} 条`));b.append(meta);b.onclick=async()=>{selected=c.key;lastSignature='';renderList();await safe(async()=>{await loadHistory();await loadMemory()})};root.append(b)}}
-function messageNode(m){if(m.kind==='event'||m.kind==='error')return el('div',`${new Date(m.time).toLocaleTimeString('zh-CN')} · ${m.text}`,'event '+m.kind);const n=el('article',undefined,'message '+m.kind),meta=el('div',undefined,'msgmeta');meta.append(el('span',m.sender||'群友'),el('time',new Date(m.time).toLocaleString('zh-CN')));if(m.source==='imported')meta.append(el('span','历史'));n.append(meta,el('div',m.text,'bubble'));return n}
+function messageNode(m){
+ if(m.kind==='event'||m.kind==='error')return el('div',`${new Date(m.time).toLocaleTimeString('zh-CN')} · ${m.text}`,'event '+m.kind);
+ const n=el('article',undefined,'message '+m.kind),meta=el('div',undefined,'msgmeta');
+ meta.append(el('span',m.sender||'群友'),el('time',new Date(m.time).toLocaleString('zh-CN')));
+ if(m.source==='imported')meta.append(el('span','历史'));
+ n.append(meta,el('div',m.text,'bubble'));
+ if(m.forward?.length){
+   const detail=el('details'),count=m.forward.reduce((sum,r)=>sum+(r.nodes?.length||0),0);
+   detail.append(el('summary',`查看合并转发 · ${count} 条记录${m.forward.some(r=>r.status!=='ok')?' · 部分未读取':''}`));
+   for(const record of m.forward){
+     detail.append(el('p',`${record.source==='quote'?'引用消息':'当前消息'} ${record.sourceMessageId} · 第 ${record.depth} 层${record.parent?' · 来自上层第 '+record.parent.nodeIndex+' 条':''}`,'hint'));
+     for(const node of record.nodes??[]){const when=Number.isFinite(node.time)?new Date(node.time*1000).toLocaleString('zh-CN'):'';detail.append(el('p',`${node.index}. ${node.sender||'未知'}${when?' · '+when:''}：${node.text||'[非文字内容]'}${node.images?.length?' [图片 '+node.images.join('、')+']':''}${node.mediaTypes?.length?' ['+node.mediaTypes.join('、')+']':''}`,'mini'));}
+     if(record.note)detail.append(el('p',record.note,'hint'));
+   }
+   n.append(detail);
+ }
+ return n;
+}
 async function loadHistory(older=false){if(!selected)return;const key=selected,data=await api('/api/chat?key='+encodeURIComponent(key)+(older?'&before='+before:''));if(key!==selected)return;const root=$('timeline'),atBottom=root.scrollHeight-root.scrollTop-root.clientHeight<100,oldHeight=root.scrollHeight;before=data.before;if(!older)root.replaceChildren();else $('loadOlder')?.remove();const nodes=data.messages.map(messageNode);if(older)root.prepend(...nodes);else root.append(...nodes);if(before>0){const b=el('button','查看更早记录');b.id='loadOlder';b.onclick=()=>safe(()=>loadHistory(true));root.prepend(b)}if(!data.total)root.append(el('div','还没有消息。在 QQ 群里发一句话试试。','empty'));$('historyCount').textContent=`共 ${data.total} 条记录`;$('chatTitle').textContent=title(key);if(older)root.scrollTop+=root.scrollHeight-oldHeight;else if(atBottom||lastSignature==='')root.scrollTop=root.scrollHeight}
 async function refresh(){if(busy)return;busy=true;try{const [s,ch]=await Promise.all([api('/api/status'),api('/api/chat')]);$('connection').textContent=s.dshReady?'Codex 已连接':'模型未就绪';$('model').textContent=`${s.model} · ${s.reasoningEffort} · ${s.serviceTier==='priority'?'Fast':'标准速度'}`;paused=ch.paused;$('pause').textContent=paused?'恢复接话':'暂停接话';chatList=ch.conversations;if(!selected&&chatList.length)selected=chatList.find(c=>c.allowed)?.key||chatList[0].key;const listVersion=selected+JSON.stringify(chatList);if(listVersion!==listSignature){renderList();listSignature=listVersion}const c=chatList.find(c=>c.key===selected);$('chatState').textContent=c?.allowed?(labels[c.status]||'就绪'):'未放行';const signature=selected+':'+c?.count;if(signature!==lastSignature){await loadHistory();lastSignature=signature;if(!memoryDirty)await loadMemory()}$('errorbar').hidden=true}catch(e){$('connection').textContent='连接中断';$('errorbar').textContent=e.message;$('errorbar').hidden=false}finally{busy=false}}
 async function safe(fn){try{await fn()}catch(e){toast(e.message)}}

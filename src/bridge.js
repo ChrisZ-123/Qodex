@@ -16,6 +16,7 @@ import { CodexApiClient } from './codex-client.js';
 import { ModelChat, DEFAULT_CHAT_STYLE } from './model-chat.js';
 import { ModelPreferences } from './model-preferences.js';
 import { ModelBackup } from './model-backup.js';
+import { loadGeneratedImage } from './generated-images.js';
 import { ChatMemory } from './chat-memory.js';
 import { mdToPlain, splitForQQ } from './md-to-plain.js';
 import { SENSITIVE_RE } from './sensitive.js';
@@ -24,6 +25,7 @@ import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
 import {prepareStickerLearning,applyVisualNotes} from './sticker-learning.js';
 import {StickerCollector} from './sticker-collector.js';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
+import { expandModelForwards } from './model-forward.js';
 import {
   loadSlang,
   saveSlang,
@@ -1619,7 +1621,7 @@ async function main() {
       }
       const SECURITY_HEADERS = {
         'X-Frame-Options': 'DENY',
-        'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+        'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
         'Referrer-Policy': 'no-referrer'
@@ -1765,6 +1767,15 @@ async function main() {
           try{const entry=stickerEntries.find(s=>s.id===url.searchParams.get('id'));if(!entry)throw new Error('表情不存在');const {buffer}=await safeFetchBuffer(entry.url,MAX_MEDIA_BYTES);const mime=mimeFromBuffer(buffer);if(!['image/png','image/jpeg','image/gif','image/webp'].includes(mime))throw new Error('图片格式不支持');sendJson({image:{mimeType:mime,data:buffer.toString('base64')}});}
           catch{sendJson({ok:false,error:'图片读取失败，请同步收藏后重试'},502);}return;
         }
+        if(modelDirected&&url.pathname==='/api/chat/image-preview'&&req.method==='GET'){
+          if(req.headers.origin&&req.headers.origin!==`http://127.0.0.1:${req.socket.localPort}`){sendJson({ok:false,error:'来源不匹配'},403);return;}
+          const key=url.searchParams.get('key'),imageId=url.searchParams.get('imageId');
+          if(!modelChat.valid(key)){sendJson({ok:false,error:'会话无效'},400);return;}
+          const item=(modelChat.entries.get(key)?.images??[]).find(x=>x.imageId===imageId);
+          if(!item){sendJson({ok:false,error:'图片记录不存在'},404);return;}
+          try{const {bytes,mimeType}=loadGeneratedImage(key,item);sendJson({image:{mimeType,data:bytes.toString('base64')},status:item.status});}
+          catch{sendJson({ok:false,error:'图片文件不可用；备份不包含图片本体'},404);}return;
+        }
         if(modelDirected&&url.pathname==='/api/chat/sticker-note'&&req.method==='POST'){
           const body=await readBody(),entry=stickerEntries.find(s=>s.id===body.id);
           if(!entry){sendJson({ok:false,error:'表情不存在'},404);return;}
@@ -1822,8 +1833,10 @@ async function main() {
             if(typeof body.style!=='string'||body.style.length>4000||typeof body.stickersEnabled!=='boolean'){sendJson({ok:false,error:'口吻最多 4000 字符，表情开关必须有效'},400);return;}
             if(body.autoLearnStickers!==undefined&&typeof body.autoLearnStickers!=='boolean'){sendJson({ok:false,error:'看图学习开关必须有效'},400);return;}
             if(body.autoCollectStickers!==undefined&&typeof body.autoCollectStickers!=='boolean'){sendJson({ok:false,error:'自动收藏开关必须有效'},400);return;}
+            if(body.imageMode!==undefined&&!['off','requested','auto'].includes(body.imageMode)){sendJson({ok:false,error:'图片生成模式无效'},400);return;}
+            if(body.stickerStyle!==undefined&&!['natural','lively'].includes(body.stickerStyle)){sendJson({ok:false,error:'表情表达倾向无效'},400);return;}
             if(body.revision!==JSON.stringify(readChatExpression())){sendJson({ok:false,error:'表达设置已变化，请重新加载后重试'},409);return;}
-            atomicWriteJson(path.join(STATE_DIR,'chat-expression.json'),{style:body.style,stickersEnabled:body.stickersEnabled,autoLearnStickers:body.autoLearnStickers??readChatExpression().autoLearnStickers,autoCollectStickers:body.autoCollectStickers??readChatExpression().autoCollectStickers});sendJson({ok:true});return;
+            atomicWriteJson(path.join(STATE_DIR,'chat-expression.json'),{style:body.style,stickersEnabled:body.stickersEnabled,autoLearnStickers:body.autoLearnStickers??readChatExpression().autoLearnStickers,autoCollectStickers:body.autoCollectStickers??readChatExpression().autoCollectStickers,imageMode:body.imageMode??readChatExpression().imageMode,stickerStyle:body.stickerStyle??readChatExpression().stickerStyle});sendJson({ok:true});return;
           }
         }
         if (modelDirected && req.method === 'POST' && url.pathname === '/api/chat/pause') {
@@ -4816,6 +4829,29 @@ async function main() {
     }
   }
 
+  async function sendGeneratedImage(key, metadata, stillCurrent, options={}) {
+    const assertSendAllowed=captureSendGuard(key),[kind,id]=key.split(':');
+    const job=sendChain.then(async()=>{
+      if(!stillCurrent()||modelChat.isPaused(key)||!isSessionAllowedInCurrentMode(key))throw new Error('图片发送已取消或权限已变化');
+      assertSendAllowed();
+      const {bytes}=loadGeneratedImage(key,metadata);
+      const message=[];
+      if(options.replyTo)message.push({type:'reply',data:{id:String(options.replyTo)}});
+      message.push({type:'image',data:{file:'base64://'+bytes.toString('base64')}});
+      if(!stillCurrent()||modelChat.isPaused(key)||!isSessionAllowedInCurrentMode(key))throw new Error('图片发送已取消或权限已变化');
+      assertSendAllowed();
+      const action=kind==='group'?'send_group_msg':'send_private_msg';
+      const params=kind==='group'?{group_id:Number(id),message}:{user_id:Number(id),message};
+      const httpUrl=String(cfg.snowluma?.httpUrl||'http://127.0.0.1:3000').replace(/\/+$/,'');
+      const res=await fetch(`${httpUrl}/${action}`,{method:'POST',headers:{'content-type':'application/json',...(cfg.snowluma?.accessToken?{authorization:`Bearer ${cfg.snowluma.accessToken}`}:{})},body:JSON.stringify(params),signal:AbortSignal.timeout(30000)});
+      const body=await res.json().catch(()=>({}));
+      if(!res.ok||body.status!=='ok'||body.retcode!==0)throw new Error(`OneBot 图片发送失败：${body.wording||body.retcode||res.status}`);
+      return {messageId:body.data?.message_id??null};
+    });
+    sendChain=job.catch(()=>{}).then(()=>sleep(cfg.sendDelayMs));
+    return await job;
+  }
+
   // ── 真人式分条发送 ──────────────────────────────────────────────────────
   function singleLineForQQ(s) {
     return String(s ?? '')
@@ -6077,10 +6113,11 @@ async function main() {
 
   loadSocialV2State();
 
-  function readChatExpression(){return {style:DEFAULT_CHAT_STYLE,stickersEnabled:true,autoLearnStickers:true,autoCollectStickers:true,...readJsonSafe(path.join(STATE_DIR,'chat-expression.json'),{})};}
+  function readChatExpression(){return {style:DEFAULT_CHAT_STYLE,stickersEnabled:true,autoLearnStickers:true,autoCollectStickers:true,imageMode:'requested',stickerStyle:'natural',...readJsonSafe(path.join(STATE_DIR,'chat-expression.json'),{})};}
   const chatPreferences=modelDirected?new ModelPreferences(path.join(STATE_DIR,'model-preferences.json')):null;
   function effectiveChatSettings(key){
-    const settings=chatPreferences.effective(key,{...cfg.codex,role:readRoleState().role??false,style:readChatExpression().style});
+    const expression=readChatExpression();
+    const settings=chatPreferences.effective(key,{...cfg.codex,role:readRoleState().role??false,style:expression.style,imageMode:expression.imageMode,stickerStyle:expression.stickerStyle});
     const role=settings.role;
     return {...settings,persona:{name:role||null,content:role&&listRoles().includes(role)?fs.readFileSync(path.join(ROOT,'roles',role+'.md'),'utf8'):'',botName:selfNickname,adminQQ:String(cfg.ownerQQ??'')}};
   }
@@ -6102,8 +6139,14 @@ async function main() {
         });
         if(learning.failures.length){const update=applyVisualNotes(stickerEntries,[],[],learning.failures);saveStickerStore(STICKER_FILE,update.entries);stickerEntries=update.entries;}
       }
-      return {style:turnSettings.style,feedback:turnSettings.feedback,stickers:settings.stickersEnabled?availableStickers.slice(0,100).map(s=>({id:s.id,description:[s.desc,s.localNote,s.usage].filter(Boolean).join('；'),tags:s.tags})):[],learningIds:learning.snapshots.map(s=>s.id),images:learning.images,snapshots:learning.snapshots,learningFailures:learning.failures.length};
+      return {style:turnSettings.style,feedback:turnSettings.feedback,imageMode:turnSettings.imageMode,stickerStyle:turnSettings.stickerStyle,stickers:settings.stickersEnabled?availableStickers.slice(0,100).map(s=>({id:s.id,description:[s.desc,s.localNote,s.usage].filter(Boolean).join('；'),tags:s.tags})):[],learningIds:learning.snapshots.map(s=>s.id),images:learning.images,snapshots:learning.snapshots,learningFailures:learning.failures.length};
     },
+    expandForward:async(key,messages,isCurrent)=>expandModelForwards(messages,{
+      fetchForward:id=>bot.raw('get_forward_msg',{id}),
+      fetchMedia:fetchMediaData,
+      isCurrent:()=>isCurrent()&&isSessionAllowedInCurrentMode(key),
+      redact:redactKnownTokensOnly
+    }),
     learnStickers:(snapshots,notes)=>{
       const settings=readChatExpression();if(!settings.stickersEnabled||!settings.autoLearnStickers)return 0;
       const update=applyVisualNotes(stickerEntries,snapshots,notes.map(n=>({...n,note:typeof n?.note==='string'?redactKnownTokensOnly(n.note):n?.note})));
@@ -6111,6 +6154,7 @@ async function main() {
       return update.learned;
     },
     sendSticker:async(key,id,stillCurrent,options)=>sendStickerV2(key,id,{replyToMessageId:options.replyTo,assertCurrent:()=>{if(!stillCurrent()||modelChat.isPaused(key)||!chatPreferences.stickerAllowed(key,id)||!readChatExpression().stickersEnabled||!isSessionAllowedInCurrentMode(key))throw new Error('表情发送已取消或权限已变化');}}),
+    sendImage:sendGeneratedImage,
     allowed:isSessionAllowedInCurrentMode, send:sendModelReply,
     persona:()=>({name:readRoleState().role,content:currentRoleHint(),botName:selfNickname,adminQQ:String(cfg.ownerQQ??'')}),
     redact:redactKnownTokensOnly,
@@ -6867,7 +6911,9 @@ async function main() {
       const info = {
         sender: String(sender ?? ''),
         text: String(text ?? '').slice(0, 200),
-        userId: senderUserId != null ? String(senderUserId) : null
+        userId: senderUserId != null ? String(senderUserId) : null,
+        media: extractMediaFromSegments(raw.message ?? []).filter(m=>m.kind==='image'),
+        forwardIds:extractForwardIds(raw.message ?? [])
       };
       replyInfoCache.set(cacheKey, { info, ts: Date.now() });
       return info;
@@ -7619,6 +7665,11 @@ async function main() {
     const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
     const mediaList = extractMediaFromSegments(event.message ?? []);
     if(modelDirected){
+      const quotedId=(event.message??[]).find(seg=>seg?.type==='reply')?.data?.id;
+      const quotedInfo=quotedId?await resolveReplyInfo(kind,id,String(quotedId),event.self_id):null;
+      const forwardRefs=[...extractForwardIds(event.message??[]).map(fid=>({id:fid,source:'message',sourceMessageId:String(event.message_id??'')})),...(quotedInfo?.forwardIds??[]).map(fid=>({id:fid,source:'quote',sourceMessageId:String(quotedId)}))];
+      const quotedMedia=quotedInfo?.media??[];
+      const quotedImages=pausedOnArrival||!quotedMedia.length?[]:await resolveMediaList(quotedMedia);
       try{if(!pausedOnArrival)for(const status of await stickerCollector.collect(key,event,mediaList))modelChat.append(key,{kind:'event',text:status});}
       catch{modelChat.append(key,{kind:'event',text:'无法记录表情收藏状态，本条未自动收藏'});}
       await modelChat.receive(key,{
@@ -7626,7 +7677,10 @@ async function main() {
         addressing:{mentionedBot:Array.isArray(event.message)&&event.message.some(seg=>seg?.type==='at'&&String(seg.data?.qq)===String(event.self_id)),repliedToBot:await isQuoteTargetSelf(event.message??[],kind,id,event.self_id)},
         messageId:String(event.message_id??''),
         text:textContent||'[图片或附件]',time:new Date().toISOString(),
-        skipModel:pausedOnArrival,images:pausedOnArrival?[]:await resolveMediaList(mediaList)
+        skipModel:pausedOnArrival,images:pausedOnArrival?[]:await resolveMediaList(mediaList),
+        quotedImageMessageId:quotedMedia.length?String(quotedId):null,quotedImages,
+        quotedImageUnavailable:quotedMedia.length>0&&!quotedImages.some(part=>part.type==='image'),
+        forwardRefs
       });
       return;
     }

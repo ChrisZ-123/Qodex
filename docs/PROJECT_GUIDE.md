@@ -1,6 +1,6 @@
 # 项目指南
 
-Qodex `qodex-v0.3.0` 是基于 [Derpyu520/qq-bridge 提交 dea3ce8](https://github.com/Derpyu520/qq-bridge/commit/dea3ce8) 的公开预览 fork。当前受支持的发布路径是 **Windows + SnowLuma OneBot + Codex ChatGPT 登录 + `conversationMode: model`**。源码中保留了一些 DSH 时代的内部模块和脚本，供改造过程参考；这些不是本版安装所需或受支持的后端接口。不要运行旧 `setup-dsh.mjs` 作为 Qodex 安装步骤。
+Qodex `qodex-v0.4.0` 是基于 [Derpyu520/qq-bridge 提交 dea3ce8](https://github.com/Derpyu520/qq-bridge/commit/dea3ce8) 的公开预览 fork。当前受支持的发布路径是 **Windows + SnowLuma OneBot + 本部署独立 Codex ChatGPT 登录 + `conversationMode: model`**。源码中保留了一些 DSH 时代的内部模块和脚本，供改造过程参考；这些不是本版安装所需或受支持的后端接口。不要运行旧 `setup-dsh.mjs` 作为 Qodex 安装步骤。
 
 ## 消息路径
 
@@ -40,7 +40,8 @@ QQ 图片可作为当前消息输入。表情学习只会读取本轮实际附�
 | --- | --- |
 | `src/bridge.js` | OneBot 连接、白名单、消息处理、本机控制台与旧模块的入口。 |
 | `src/codex-client.js` / `src/codex-rpc.js` | 启动隔离的 Codex app-server，会话、模型检查及事件转换。 |
-| `src/model-chat.js` | 每会话队列、接话/静默、历史、暂停、发送与同轮记忆处理。 |
+| `src/model-chat.js` / `src/model-forward.js` | 每会话队列、接话/静默、历史、合并转发、原生生图与同轮记忆处理。 |
+| `src/generated-images.js` | 生成图片的会话归属、格式、大小与本机路径验证。 |
 | `src/chat-memory.js` / `src/memory-store.js` | 条目记忆协议、schema 2 迁移、修订、30,000 字符限制与按需检索。 |
 | `src/model-preferences.js` / `src/model-backup.js` | 分会话覆盖、反馈、持久暂停、表情禁用及白名单格式备份与恢复。 |
 | `src/sticker-collector.js` / `src/sticker-learning.js` / `src/sticker-lib.js` | 表情自动收藏、看图笔记和目录管理。 |
@@ -48,10 +49,10 @@ QQ 图片可作为当前消息输入。表情学习只会读取本轮实际附�
 | `scripts/windows/` | 安装、启动、状态、验证、停止和可选自动启动。 |
 | `config.example.json` | 脱敏配置模板。真实 `config.json`、`state/` 不提交。 |
 
-Codex 子进程使用本地 ChatGPT 登录，启动时检查 `account/read`、`model/list` 与所选推理强度，创建会话时禁止模型回退。发布模式下不向 Codex 暴露 QQ MCP 发送工具；QQ 发送由桥接在检查当前权限和暂停状态后执行。进程级配置关闭 shell、插件、连接器、计算机操作和多智能体能力，并使用只读沙箱；原生网页搜索仍可使用。实际安全边界应结合代码与本机配置审阅，控制台/OneBot 服务只绑定本机回环地址。
+Codex 子进程使用 `state/codex-home` 内独立的官方 ChatGPT 登录，启动时检查 `account/read`、分页 `model/list` 与所选推理强度，创建会话时禁止模型回退。发布模式下不向 Codex 暴露 QQ MCP 发送工具；QQ 发送由桥接在检查当前权限和暂停状态后执行。进程级配置关闭 shell、插件、连接器、计算机操作和多智能体能力，并使用只读沙箱；原生网页搜索仍可使用。经本轮确认的生图任务只开放原生图片能力。实际安全边界应结合代码与本机配置审阅，控制台/OneBot 服务只绑定本机回环地址。
 
 ## 本地数据与验证
 
-`state/` 包含会话映射、聊天历史、分会话覆盖和反馈、表情资料、DPAPI 令牌状态及日志。`chatMemory.directory` 默认是仓库根目录下的 `state/chat-memory`；显式相对路径也从仓库根目录解析，绝对路径按原值使用。迁移或升级前须备份**旧源码、`config.json`、整个 `state/`、自定义角色及任何仓库外记忆目录**。控制台 JSON 备份只包含允许的章节，不含图片本体、本机凭据文件或 Codex 登录态，文本仍需自行检查敏感信息，不能作为完整回退镜像。Codex 官方登录资料不在 Qodex 仓库里。参阅[升级与回退指南](UPGRADE_V030.md)与[接口说明](CONSOLE_API.md)。
+`state/` 包含会话映射、聊天历史、分会话覆盖和反馈、表情资料、生成图片、独立 Codex 登录、DPAPI 令牌状态及日志。`chatMemory.directory` 默认是仓库根目录下的 `state/chat-memory`；显式相对路径也从仓库根目录解析，绝对路径按原值使用。迁移或升级前须备份**旧源码、`config.json`、整个 `state/`、自定义角色及任何仓库外记忆目录**。控制台 JSON 备份只包含允许的章节，不含图片本体、本机凭据文件或 Codex 登录态，文本仍需自行检查敏感信息，不能作为完整回退镜像。`state/` 被 Git 忽略但属于本机敏感资料。参阅[升级与回退指南](UPGRADE_V040.md)与[接口说明](CONSOLE_API.md)。
 
 变更后先运行聚焦检查；发布回归入口是 `npm test`，Windows 部署脚本检查是 `npm run test:deployment`。这些检查不代替新机器、真实 QQ 和第三方版本的联调。贡献前参阅[贡献指南](../CONTRIBUTING.md)、[安全说明](../SECURITY.md)与[来源及许可说明](../THIRD_PARTY_NOTICES.md)。

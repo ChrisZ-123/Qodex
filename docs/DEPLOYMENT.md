@@ -1,12 +1,12 @@
 # Windows 部署与运行
 
-本指南面向 `qodex-v0.3.0` 预览版。当前支持 Windows 部署；全新安装仍需按下文逐项检查。Qodex 需要本机持续运行，电脑睡眠、关机或断网时不能回复。
+本指南面向 `qodex-v0.4.0` 预览版。当前支持 Windows 部署；全新安装仍需按下文逐项检查。Qodex 需要本机持续运行，电脑睡眠、关机或断网时不能回复。
 
 ## 1. 准备依赖
 
 1. 安装 [Git for Windows](https://git-scm.com/download/win)，以使用下文的 `git clone` 和升级时的 `git pull --ff-only`。
 2. 安装 [Node.js](https://nodejs.org/) 24 或更新版本；这是当前 Windows 部署脚本要求的版本。
-3. 安装官方 [Codex CLI](https://developers.openai.com/codex/cli)，以使用 Qodex 的同一 Windows 用户登录 **ChatGPT 账号**。仅有 OpenAI API key 不满足此版的账号检查。若 Codex 命令解析为 `.cmd` 包装器，向导中指定真正的可执行文件。
+3. 安装官方 [Codex CLI](https://developers.openai.com/codex/cli)，使用 Qodex 的同一 Windows 用户完成独立的 **ChatGPT 账号**登录。仅有 OpenAI API key 不满足此版的账号检查。若 Codex 命令解析为 `.cmd` 包装器，登录和向导中指定真正的可执行文件。
 4. 从 [SnowLuma 官方发布页](https://github.com/SnowLuma/SnowLuma/releases/latest) 单独下载安装，阅读其条款并自行登录 QQ。在 SnowLuma 的 OneBot 设置中开启本机 HTTP API 和 WebSocket 服务端，分别记录地址和令牌。默认地址分别是 `http://127.0.0.1:3000` 与 `ws://127.0.0.1:3001`。WebUI 默认 `http://127.0.0.1:5099`，以自己的设置为准。
 
 不要把 HTTP 地址填成 WebSocket 端口。Windows 向导要求 URL 使用字面量 `127.0.0.1` 和显式端口；`localhost`、IPv6 地址或无端口 URL 不会通过校验。OneBot HTTP、WebSocket、SnowLuma WebUI、Qodex 控制台和控制服务的五个端口必须互不相同。Qodex 不安装 SnowLuma，不代用户扫码登录或接受第三方协议；不要把这些服务直接暴露到公网。
@@ -19,16 +19,17 @@
 git clone https://github.com/ChrisZ-123/Qodex.git
 cd Qodex
 npm ci
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Login-Codex.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1
 ```
 
-也可用 `npm run setup` 调用同一 Windows 向导。
+登录脚本调用官方 `codex.exe login`，将登录状态写到本部署的 `state/codex-home`；不会读取或复制桌面端的登录文件。完成后才运行设置向导。也可用 `npm run setup` 调用同一 Windows 向导。若登录失效，先停止本部署，再用启动面板的“登录 Codex（独立）”重新完成官方登录。
 
 仓库根目录的 `Setup.ps1` 调用 `scripts/windows/Setup.ps1`。向导会引导填写 Codex 可执行文件、可选的 SnowLuma 启动器、SnowLuma WebUI/HTTP/WS 地址、管理员 QQ、允许的群和私聊、模型/推理强度/速度。设置 OneBot 令牌时在安全提示中输入；令牌保存在本机 `state/secrets.dpapi`，不应手工粘贴进 `config.json`、Issue 或日志。控制台与本机控制接口的令牌也由安装过程在本地生成。
 
 安装向导不会默认覆盖已有配置；再次运行主要用于检查当前安装。白名单默认是空的，`allowAllWhenEmpty=false`，因此配置完成前**不会响应任何群或私聊**。向导要求至少填写一个允许的群或私聊；先只放行你准备试用的目标。若填写 SnowLuma 启动器路径，Qodex 启动时会在 OneBot WebSocket 不可达的情况下尝试启动它；没有填写时仍可自行启动 SnowLuma。
 
-建议从 `gpt-6-luna` / `max` / 标准速度开始。Qodex 启动时会检查当前 ChatGPT 账号可用的模型和推理强度，不会自动降级到别的模型。可选 `priority` 速度可能影响与其他 Codex 使用共享的额度，也不保证固定倍率提速。首版记录的本机环境为 Node 24.18.1、`codex-cli 0.155.0-alpha.16` 和 SnowLuma 1.14.17；这不是 v0.3.0 在新机器或未来版本的兼容性承诺。
+建议从 `gpt-6-luna` / `max` / 标准速度开始。Qodex 启动时会检查独立登录账号可用的模型和推理强度，不会自动降级到别的模型。公开默认生图为“仅明确请求”、表情为“自然适量”；在控制台可关闭或单独调整。主动生图会增加用量。可选 `priority` 速度可能影响与其他 Codex 使用共享的额度，也不保证固定倍率提速。首版记录的本机环境为 Node 24.18.1、`codex-cli 0.155.0-alpha.16` 和 SnowLuma 1.14.17；这不是 v0.4.0 在新机器或未来版本的兼容性承诺。
 
 ## 3. 启动与检查
 
@@ -59,10 +60,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Control.ps
 
 “条目记忆”支持新增、编辑、置顶、停用及恢复旧版本；置顶条目不会由模型改写。机器人回复下的“多余”“太长”“合适”反馈只作用于本会话后续表达，可在会话设置中撤销。图库可搜索、按学习状态筛选、修改备注，并全局或按会话禁用；禁用不会删除 QQ 收藏。
 
+在全局和当前会话设置里，图片生成可设为关闭、仅明确请求或允许模型主动生成；表情可设为自然适量或更活泼。当前会话留空即继承全局。群友引用本会话图片要求改图时，若原图无法取得，Qodex 会提示重新发送，不会用别的图代替。生图每轮最多向 QQ 发送一张，其他群可继续文字聊天。合并转发会在本轮读取，历史可展开已取得的节点与失败说明；OneBot 可能直接返回已展平记录。转发中的旧消息不具备管理权限。
+
 “配置与记忆备份”可下载白名单格式 JSON，默认不带聊天历史；导入时先预览差异、勾选项目，再确认恢复。恢复前会保存快照，失败时回滚。进行中的回复会停止，未受所选恢复内容影响的空闲会话保持原上下文。此 JSON 不含本机凭据文件、登录态、图片本体或全部运行文件，可能仍包含私人聊天、人格、记忆乃至文本中的敏感信息，须妥善保管。接口和修订冲突说明见[控制台接口](CONSOLE_API.md)。
 
 ## 升级与备份
 
-从 v0.2.0 升级到 v0.3.0 会改变记忆文件格式。先停止进程，备份**整个旧部署目录及外部记忆目录**，再更新。完整步骤、迁移检查与配套回退方式见[v0.3.0 升级与回退指南](UPGRADE_V030.md)。仅下载控制台 JSON 不能完成整套部署回退。若 `git pull --ff-only` 因本地改动或分叉失败，先检查差异；不要强制重置或覆盖本地数据。Codex 登录资料由官方 Codex 单独管理，Windows DPAPI 令牌状态与当前 Windows 用户环境相关。
+从 v0.3.0 升级到 v0.4.0 时，先停止进程，备份**整个旧部署目录及外部记忆目录**，再更新。独立登录和可选原生会话迁移步骤见[v0.4.0 升级与回退指南](UPGRADE_V040.md)。旧 v0.2.0 用户先看[v0.3.0 升级指南](UPGRADE_V030.md)。仅下载控制台 JSON 不能完成整套部署回退；生成图片文件和独立 Codex 登录状态须按本机敏感数据分别保护。若 `git pull --ff-only` 因本地改动或分叉失败，先检查差异；不要强制重置或覆盖本地数据。
 
 故障定位见[排查指南](TROUBLESHOOTING.md)，配置含义见[配置说明](CONFIGURATION.md)。

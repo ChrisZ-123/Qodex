@@ -26,6 +26,6 @@
 
 记忆文件 `schemaVersion:2`，按会话保存 `key`、`enabled`、整体 `revision` 与 `entries`。条目有 `id`、`text`、`pinned`、`enabled`、`version`、`source`、`versions` 等字段。首次读取旧格式时，会将原文件保留为 `memory.json.legacy-v1.json`，再写入新版。模型只能修改本轮检索可见、未置顶且来源可核对的普通条目。每会话有效记忆总量上限 30,000 字符；本地中文分词和 BM25 负责按需检索，置顶内容优先。
 
-导出 JSON 的顶层为 `format:"qq-codex-backup"`、`version:1`、`createdAt` 和 `sections`。支持的章节是 `settings`、`roles`、`conversations`、`memory`、`feedback`、`stickers`、`images`、`history`；最后一项只有勾选历史时才出现。`images` 只含图片 ID、会话归属、格式、状态等元数据。v0.3.0 备份没有新字段时，导入按 `requested`、`natural` 和分会话继承处理。导入校验会话 ID、角色名、记忆条目、图片元数据和当前账号可用模型。恢复前自动将本机快照写到 `state/restore-snapshots/`，执行中停止进行中的回复，失败时尝试回滚；有数据变化的相关空闲会话才重建模型上下文，单纯恢复表情备注、反馈或图片元数据不重置无关空闲会话。历史恢复不会重发 QQ 消息。JSON 排除本机凭据文件、Codex 登录态、图片本体与会话绑定，但可能包含私人对话、角色、记忆以及未被自动识别的敏感文本。它不能代替升级前的[完整目录备份](UPGRADE_V040.md)。
+导出 JSON 的顶层为 `format:"qq-codex-backup"`、`version:1`、`createdAt` 和 `sections`。支持的章节是 `settings`、`roles`、`conversations`、`memory`、`feedback`、`stickers`、`images`、`history`；最后一项只有勾选历史时才出现。`images` 只含图片 ID、会话归属、格式、状态等元数据。可选 `history` 保留消息文字和图片编号，不包含运行记录及转发节点的展开副本；需保留这些本机状态时请备份整个部署目录。v0.3.0 备份没有新字段时，导入按 `requested`、`natural` 和分会话继承处理。导入校验会话 ID、角色名、记忆条目、图片元数据和当前账号可用模型。恢复前自动将本机快照写到 `state/restore-snapshots/`，执行中停止进行中的回复，失败时尝试回滚；有数据变化的相关空闲会话才重建模型上下文，单纯恢复表情备注、反馈或图片元数据不重置无关空闲会话。历史恢复不会重发 QQ 消息。JSON 排除本机凭据文件、Codex 登录态、图片本体与会话绑定，但可能包含私人对话、角色、记忆以及未被自动识别的敏感文本。它不能代替升级前的[完整目录备份](UPGRADE_V040.md)。
 
 合并转发记录附在相应历史消息的 `forward` 字段中，包含已读取节点、层级、部分失败与截断标记。当前读取预算为三层、八份、一百条节点、两万字符、五张图片和十五秒；OneBot 返回展平节点时，页面会按返回顺序显示。转发内容是引用资料，不代表当前发言者或管理员授权。

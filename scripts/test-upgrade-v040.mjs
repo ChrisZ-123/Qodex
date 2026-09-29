@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {planSessionMigration,applySessionMigration} from './windows/migrate-codex-sessions.mjs';
 import {BOT_CODEX_HOME} from '../src/codex-rpc.js';
 import {GENERATED_ROOT} from '../src/generated-images.js';
@@ -29,6 +29,21 @@ function fixture(label){
 }
 
 try{
+  async function isolatedPaths(label){
+    const install=path.join(temp,label,'Qodex 中文 空格'),src=path.join(install,'src');
+    fs.mkdirSync(src,{recursive:true});
+    fs.writeFileSync(path.join(install,'package.json'),'{"type":"module"}');
+    for(const name of ['codex-rpc.js','generated-images.js'])fs.copyFileSync(path.join(releaseRoot,'src',name),path.join(src,name));
+    const {BOT_CODEX_HOME:codex}=await import(pathToFileURL(path.join(src,'codex-rpc.js')).href);
+    const {GENERATED_ROOT:images}=await import(pathToFileURL(path.join(src,'generated-images.js')).href);
+    assert.equal(path.resolve(codex),path.join(install,'state','codex-home'));
+    assert.equal(path.resolve(images),path.join(install,'state','generated-images'));
+    return {codex,images};
+  }
+  const firstInstall=await isolatedPaths('deployment-one'),secondInstall=await isolatedPaths('deployment-two');
+  assert.notEqual(firstInstall.codex,secondInstall.codex);
+  assert.notEqual(firstInstall.images,secondInstall.images);
+
   const first=fixture('normal');
   const plan=planSessionMigration(first.root,first.source);
   assert.equal(plan.total,1);assert.equal(plan.pending.length,1);
@@ -63,7 +78,7 @@ try{
   record[foreign.id].rolloutPath=foreign.sourceFile;
   fs.writeFileSync(foreign.recordsPath,JSON.stringify(record));
   assert.throws(()=>planSessionMigration(foreign.root,foreign.source),/独立目录/);
-  console.log('PASS v0.4 isolated paths, explicit session migration, repeated run, conflict, rollback and credential exclusion');
+  console.log('PASS v0.4 two-install path isolation, explicit session migration, repeated run, conflict, rollback and credential exclusion');
 }finally{
   if(!path.resolve(temp).startsWith(path.resolve(os.tmpdir())+path.sep+'qodex-v040-'))throw new Error('Unexpected cleanup target');
   fs.rmSync(temp,{recursive:true,force:true});

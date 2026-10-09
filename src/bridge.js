@@ -26,6 +26,8 @@ import {prepareStickerLearning,applyVisualNotes} from './sticker-learning.js';
 import {StickerCollector} from './sticker-collector.js';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { expandModelForwards } from './model-forward.js';
+import { transcribeModelVoices } from './model-voice.js';
+import {WavesClient,WavesSettings,WavesController,loadWavesAsset,safeGameText} from './waves-client.js';
 import {
   loadSlang,
   saveSlang,
@@ -151,6 +153,7 @@ const DIRECTION_HINT = '注意：消息里的 [引用 某人：...] 表示这句
 
 // 已知的二代 agent token 集合：日志/活动/出站文本统一脱敏，防止令牌被模型泄露到 QQ。
 const KNOWN_AGENT_TOKENS = new Set();
+for(const value of [process.env.QBOT_WAVES_TOKEN,process.env.QBOT_CONTROL_TOKEN])if(value)KNOWN_AGENT_TOKENS.add(value);
 
 // 敏感文本脱敏：把 SENSITIVE_RE 命中的片段替换为 ***，供日志/反馈/活动记录写入前使用。
 // SENSITIVE_RE 未带 g 标志，这里动态补 g 以替换所有命中片段。
@@ -234,6 +237,7 @@ function loadConfig() {
     backend: file.backend ?? 'dsh',
     codex: { ...(file.codex ?? {}), serviceTier: file.codex?.serviceTier === 'default' ? null : (file.codex?.serviceTier ?? null) },
     chatMemory: { directory: 'state/chat-memory', ...(file.chatMemory ?? {}) },
+    waves: { rpcPort:8788,loginPort:8789,tunnelMetricsPort:8790,remoteLoginEnabled:false,...(file.waves??{}) },
     dsh: {
       baseUrl: 'http://127.0.0.1:3080',
       provider: 'deepseek-official',
@@ -268,6 +272,7 @@ function loadConfig() {
     sendDelayMs: file.sendDelayMs ?? 300,
     questionTimeoutMs: file.questionTimeoutMs ?? 5 * 60 * 1000,
     consolePort: file.consolePort ?? 3100,
+    controlPort: file.controlPort ?? 3110,
     consoleToken: process.env.QBOT_CONSOLE_TOKEN || file.consoleToken || '',
     security: {
       interceptNotify: true,
@@ -1722,12 +1727,51 @@ async function main() {
           sendJson({ok:false,error:'模型自主模式不开放旧版 MCP 接口'},403); return;
         }
         if(modelDirected&&modelChat.restoring&&req.method==='POST'){sendJson({ok:false,error:'正在恢复备份，请稍候'},409);return;}
+        if(modelDirected&&url.pathname==='/api/waves/status'&&req.method==='GET'){const result=await waves.status();const key=url.searchParams.get('key');sendJson({...result,...(modelChat.valid(key)?{key,effective:wavesSettings.enabled(key),override:wavesSettings.data.conversations[key]??null}:{})});return;}
+        if(modelDirected&&url.pathname==='/api/waves/settings'&&req.method==='POST'){
+          const body=await readBody();if(Object.keys(body).some(k=>!['key','enabled','revision'].includes(k))){sendJson({ok:false,error:'鸣潮设置含未知字段'},400);return;}
+          if(body.key&&!modelChat.valid(body.key)){sendJson({ok:false,error:'会话无效'},400);return;}
+          if(!body.key&&body.enabled===true&&readJsonSafe(path.join(wavesRoot,'installation.json'),{}).complete!==true){sendJson({ok:false,error:'请先安装可选鸣潮模块，然后确认会话迁移说明再开启。'},409);return;}
+          const result=wavesSettings.update(body);let policyError=null;
+          try{
+            const keys=new Set([...modelChat.entries.keys(),...(cfg.allow.groups??[]).map(id=>'group:'+id),...(cfg.allow.private??[]).map(id=>'private:'+id)]);
+            for(const key of keys)if(!wavesSettings.enabled(key))await waves.cancel(modelChat.running.get(key)??{key});
+            if(body.key){if(wavesSettings.data.enabled)await waves.syncPolicy();}
+            else if(body.enabled){await syncWavesDeployment();await waves.syncPolicy();await waves.status();}
+            else{try{await waves.syncPolicy();}finally{await syncWavesDeployment();}}
+          }catch(error){policyError=safeGameText(error.message);}
+          sendJson({...result,policySynced:!policyError,...(policyError?{policyError}: {})});return;
+        }
+        if(modelDirected&&['/api/waves/accounts','/api/waves/subscriptions'].includes(url.pathname)&&req.method==='GET'){sendJson(await wavesClient.call(url.pathname==='/api/waves/accounts'?'/v1/accounts':'/v1/subscriptions'));return;}
+        if(modelDirected&&url.pathname==='/api/waves/subscriptions'&&req.method==='POST'){
+          const body=await readBody();if(body.revision!==wavesSettings.data.revision){sendJson({ok:false,error:'鸣潮设置已变化，请刷新'},409);return;}
+          if(!modelChat.valid(body.key)||!/^[1-9]\d*$/.test(String(body.senderQQ))||body.signEnabled===true||body.reminderEnabled===true||Object.keys(body).some(k=>!['key','senderQQ','revision','signEnabled','reminderEnabled','threshold'].includes(k))){sendJson({ok:false,error:'控制台可停用订阅，开通必须由玩家本人确认'},400);return;}
+          const {revision,...patch}=body;
+          // Reserve this revision before an awaited external mutation. A stale
+          // concurrent request must fail before changing the adapter's data.
+          wavesSettings.update({enabled:wavesSettings.data.enabled,revision});
+          const result=await wavesClient.call('/v1/subscriptions',patch);sendJson(result);return;
+        }
+        if(modelDirected&&url.pathname==='/api/waves/image-preview'&&req.method==='GET'){
+          if(req.headers.origin&&req.headers.origin!==`http://127.0.0.1:${req.socket.localPort}`){sendJson({ok:false,error:'来源不匹配'},403);return;}
+          const key=url.searchParams.get('key'),id=url.searchParams.get('id');if(!modelChat.valid(key)){sendJson({ok:false,error:'会话无效'},400);return;}
+          const asset=modelChat.entries.get(key)?.wavesImages?.find(x=>x.id===id&&x.key===key);if(!asset){sendJson({ok:false,error:'鸣潮图片不属于此会话'},404);return;}
+          const {bytes,mimeType}=loadWavesAsset(wavesRoot,asset);sendJson({image:{mimeType,data:bytes.toString('base64')}});return;
+        }
         if(modelDirected&&url.pathname==='/api/chat/backup'&&req.method==='GET'){sendJson(chatBackup.export(url.searchParams.get('history')==='1'));return;}
         if(modelDirected&&url.pathname==='/api/chat/backup/preview'&&req.method==='POST'){
           try{const body=await readBody();sendJson(chatBackup.preview(body.backup,await api.listModels()));}catch(error){sendJson({ok:false,error:redactKnownTokensOnly(error.message)},error.statusCode??400);}return;
         }
         if(modelDirected&&url.pathname==='/api/chat/backup/restore'&&req.method==='POST'){
-          try{const body=await readBody();sendJson(await chatBackup.restore(body.id,body.sections));}catch(error){sendJson({ok:false,error:redactKnownTokensOnly(error.message)},error.statusCode??400);}return;
+          try{
+            const body=await readBody(),result=await chatBackup.restore(body.id,body.sections);
+            try{await reconcileWavesPolicy();result.policySynced=true;}
+            catch(error){result.policySynced=false;result.policyError=redactKnownTokensOnly(error.message);}
+            sendJson(result);
+          }catch(error){
+            if(String(error.message).startsWith('恢复失败'))try{await reconcileWavesPolicy();}catch{}
+            sendJson({ok:false,error:redactKnownTokensOnly(error.message)},error.statusCode??400);
+          }return;
         }
         if(modelDirected&&url.pathname==='/api/chat/settings'){
           const body=req.method==='POST'?await readBody():null,key=body?.key??url.searchParams.get('key');
@@ -1835,15 +1879,16 @@ async function main() {
             if(body.autoCollectStickers!==undefined&&typeof body.autoCollectStickers!=='boolean'){sendJson({ok:false,error:'自动收藏开关必须有效'},400);return;}
             if(body.imageMode!==undefined&&!['off','requested','auto'].includes(body.imageMode)){sendJson({ok:false,error:'图片生成模式无效'},400);return;}
             if(body.stickerStyle!==undefined&&!['natural','lively'].includes(body.stickerStyle)){sendJson({ok:false,error:'表情表达倾向无效'},400);return;}
+            if(body.voiceEnabled!==undefined&&typeof body.voiceEnabled!=='boolean'){sendJson({ok:false,error:'语音读取开关无效'},400);return;}
             if(body.revision!==JSON.stringify(readChatExpression())){sendJson({ok:false,error:'表达设置已变化，请重新加载后重试'},409);return;}
-            atomicWriteJson(path.join(STATE_DIR,'chat-expression.json'),{style:body.style,stickersEnabled:body.stickersEnabled,autoLearnStickers:body.autoLearnStickers??readChatExpression().autoLearnStickers,autoCollectStickers:body.autoCollectStickers??readChatExpression().autoCollectStickers,imageMode:body.imageMode??readChatExpression().imageMode,stickerStyle:body.stickerStyle??readChatExpression().stickerStyle});sendJson({ok:true});return;
+            atomicWriteJson(path.join(STATE_DIR,'chat-expression.json'),{style:body.style,stickersEnabled:body.stickersEnabled,autoLearnStickers:body.autoLearnStickers??readChatExpression().autoLearnStickers,autoCollectStickers:body.autoCollectStickers??readChatExpression().autoCollectStickers,imageMode:body.imageMode??readChatExpression().imageMode,stickerStyle:body.stickerStyle??readChatExpression().stickerStyle,voiceEnabled:body.voiceEnabled??readChatExpression().voiceEnabled});sendJson({ok:true});return;
           }
         }
         if (modelDirected && req.method === 'POST' && url.pathname === '/api/chat/pause') {
           const body=await readBody();if(typeof body.paused!=='boolean'){sendJson({ok:false},400);return;}
           if(body.key&&!modelChat.valid(body.key)){sendJson({ok:false,error:'会话无效'},400);return;}
           if(body.revision!==undefined&&body.revision!==chatPreferences.data.revision){sendJson({ok:false,error:'状态已更新，请刷新'},409);return;}
-          await modelChat.pause(body.paused,body.key??null);sendJson({ok:true,paused:modelChat.paused});return;
+          await modelChat.pause(body.paused,body.key??null);try{await waves.syncPolicy();}catch{}sendJson({ok:true,paused:modelChat.paused});return;
         }
         if (req.method === 'GET' && url.pathname === '/api/roles/content') {
           const name=url.searchParams.get('name')??'';
@@ -1890,7 +1935,7 @@ async function main() {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
           try {
             let html=fs.readFileSync(path.join(ROOT, 'public', modelDirected ? 'model-console.html' : 'console.html'), 'utf8');
-            if(modelDirected)html=html.replace('</body>','<script>'+fs.readFileSync(path.join(ROOT,'public','model-controls.js'),'utf8')+'</script></body>');
+            if(modelDirected)html=html.replace('</body>','<script>'+fs.readFileSync(path.join(ROOT,'public','model-controls.js'),'utf8')+'</script><script>'+fs.readFileSync(path.join(ROOT,'public','model-waves.js'),'utf8')+'</script></body>');
             res.end(html);
           } catch {
             res.end('控制台页面缺失：qq-bridge/public/console.html');
@@ -2361,6 +2406,7 @@ async function main() {
           cfg.deny = { private: deny.private, groups: deny.groups };
           cfg.ownerQQ = ownerQQ;
           reconcileSessionPolicies();
+          if(modelDirected)try{await waves.syncPolicy();}catch{}
           log(`控制台：白名单已更新（群: ${allow.groups.join(',') || '无'}，私聊: ${allow.private.join(',') || '无'}，管理员: ${ownerQQ ?? '未设置'}）`);
           sendJson({ ok: true, allow, deny, ownerQQ });
           return;
@@ -4829,28 +4875,21 @@ async function main() {
     }
   }
 
-  async function sendGeneratedImage(key, metadata, stillCurrent, options={}) {
+  async function sendBinaryImage(key,loadBytes,stillCurrent,options={},extraAllowed=()=>true){
     const assertSendAllowed=captureSendGuard(key),[kind,id]=key.split(':');
+    const check=()=>{if(!stillCurrent()||modelChat.isPaused(key)||!isSessionAllowedInCurrentMode(key)||!extraAllowed())throw Error('图片发送已取消或权限已变化');assertSendAllowed();};
     const job=sendChain.then(async()=>{
-      if(!stillCurrent()||modelChat.isPaused(key)||!isSessionAllowedInCurrentMode(key))throw new Error('图片发送已取消或权限已变化');
-      assertSendAllowed();
-      const {bytes}=loadGeneratedImage(key,metadata);
-      const message=[];
+      check();const bytes=loadBytes(),message=[];
       if(options.replyTo)message.push({type:'reply',data:{id:String(options.replyTo)}});
-      message.push({type:'image',data:{file:'base64://'+bytes.toString('base64')}});
-      if(!stillCurrent()||modelChat.isPaused(key)||!isSessionAllowedInCurrentMode(key))throw new Error('图片发送已取消或权限已变化');
-      assertSendAllowed();
-      const action=kind==='group'?'send_group_msg':'send_private_msg';
-      const params=kind==='group'?{group_id:Number(id),message}:{user_id:Number(id),message};
-      const httpUrl=String(cfg.snowluma?.httpUrl||'http://127.0.0.1:3000').replace(/\/+$/,'');
-      const res=await fetch(`${httpUrl}/${action}`,{method:'POST',headers:{'content-type':'application/json',...(cfg.snowluma?.accessToken?{authorization:`Bearer ${cfg.snowluma.accessToken}`}:{})},body:JSON.stringify(params),signal:AbortSignal.timeout(30000)});
-      const body=await res.json().catch(()=>({}));
-      if(!res.ok||body.status!=='ok'||body.retcode!==0)throw new Error(`OneBot 图片发送失败：${body.wording||body.retcode||res.status}`);
-      return {messageId:body.data?.message_id??null};
-    });
-    sendChain=job.catch(()=>{}).then(()=>sleep(cfg.sendDelayMs));
-    return await job;
+      message.push({type:'image',data:{file:'base64://'+bytes.toString('base64')}});check();
+      const action=kind==='group'?'send_group_msg':'send_private_msg',params=kind==='group'?{group_id:Number(id),message}:{user_id:Number(id),message};
+      const endpoint=String(cfg.snowluma?.httpUrl||'http://127.0.0.1:3000').replace(/\/+$/,'');
+      const response=await fetch(endpoint+'/'+action,{method:'POST',headers:{'content-type':'application/json',...(cfg.snowluma?.accessToken?{authorization:`Bearer ${cfg.snowluma.accessToken}`}:{})},body:JSON.stringify(params),signal:AbortSignal.timeout(30000)}),body=await response.json().catch(()=>({}));
+      if(!response.ok||body.status!=='ok'||body.retcode!==0)throw Error('OneBot 图片发送失败');return {messageId:body.data?.message_id??null};
+    });sendChain=job.catch(()=>{}).then(()=>sleep(cfg.sendDelayMs));return job;
   }
+  function sendGeneratedImage(key,metadata,stillCurrent,options={}){return sendBinaryImage(key,()=>loadGeneratedImage(key,metadata).bytes,stillCurrent,options);}
+  function sendGameAsset(key,asset,stillCurrent,options={}){return sendBinaryImage(key,()=>loadWavesAsset(wavesRoot,asset).bytes,stillCurrent,options,()=>wavesSettings.enabled(key)&&asset.key===key);}
 
   // ── 真人式分条发送 ──────────────────────────────────────────────────────
   function singleLineForQQ(s) {
@@ -6113,11 +6152,11 @@ async function main() {
 
   loadSocialV2State();
 
-  function readChatExpression(){return {style:DEFAULT_CHAT_STYLE,stickersEnabled:true,autoLearnStickers:true,autoCollectStickers:true,imageMode:'requested',stickerStyle:'natural',...readJsonSafe(path.join(STATE_DIR,'chat-expression.json'),{})};}
+  function readChatExpression(){return {style:DEFAULT_CHAT_STYLE,stickersEnabled:true,autoLearnStickers:true,autoCollectStickers:true,imageMode:'requested',stickerStyle:'natural',voiceEnabled:false,...readJsonSafe(path.join(STATE_DIR,'chat-expression.json'),{})};}
   const chatPreferences=modelDirected?new ModelPreferences(path.join(STATE_DIR,'model-preferences.json')):null;
   function effectiveChatSettings(key){
     const expression=readChatExpression();
-    const settings=chatPreferences.effective(key,{...cfg.codex,role:readRoleState().role??false,style:expression.style,imageMode:expression.imageMode,stickerStyle:expression.stickerStyle});
+    const settings=chatPreferences.effective(key,{...cfg.codex,role:readRoleState().role??false,style:expression.style,imageMode:expression.imageMode,stickerStyle:expression.stickerStyle,voiceEnabled:expression.voiceEnabled});
     const role=settings.role;
     return {...settings,persona:{name:role||null,content:role&&listRoles().includes(role)?fs.readFileSync(path.join(ROOT,'roles',role+'.md'),'utf8'):'',botName:selfNickname,adminQQ:String(cfg.ownerQQ??'')}};
   }
@@ -6147,6 +6186,12 @@ async function main() {
       isCurrent:()=>isCurrent()&&isSessionAllowedInCurrentMode(key),
       redact:redactKnownTokensOnly
     }),
+    transcribeVoice:async(key,messages,isCurrent,cached)=>transcribeModelVoices(messages,{
+      fetchText:messageId=>bot.raw('get_record_text',{message_id:messageId}),
+      cached,
+      isCurrent:()=>isCurrent()&&isSessionAllowedInCurrentMode(key),
+      redact:redactKnownTokensOnly
+    }),
     learnStickers:(snapshots,notes)=>{
       const settings=readChatExpression();if(!settings.stickersEnabled||!settings.autoLearnStickers)return 0;
       const update=applyVisualNotes(stickerEntries,snapshots,notes.map(n=>({...n,note:typeof n?.note==='string'?redactKnownTokensOnly(n.note):n?.note})));
@@ -6155,13 +6200,52 @@ async function main() {
     },
     sendSticker:async(key,id,stillCurrent,options)=>sendStickerV2(key,id,{replyToMessageId:options.replyTo,assertCurrent:()=>{if(!stillCurrent()||modelChat.isPaused(key)||!chatPreferences.stickerAllowed(key,id)||!readChatExpression().stickersEnabled||!isSessionAllowedInCurrentMode(key))throw new Error('表情发送已取消或权限已变化');}}),
     sendImage:sendGeneratedImage,
+    sendGameImage:sendGameAsset,
     allowed:isSessionAllowedInCurrentMode, send:sendModelReply,
     persona:()=>({name:readRoleState().role,content:currentRoleHint(),botName:selfNickname,adminQQ:String(cfg.ownerQQ??'')}),
     redact:redactKnownTokensOnly,
     legacy:{...readJsonSafe(path.join(STATE_DIR,'social-v2.json'),{}),sessions:state.sessions}
   }) : null;
 
-  const chatBackup=modelDirected?new ModelBackup({root:ROOT,chat:modelChat,preferences:chatPreferences,getConfig:()=>cfg,getExpression:readChatExpression,getStickers:()=>stickerEntries,setStickers:(entries,persist=true)=>{if(persist)saveStickerStore(STICKER_FILE,entries);stickerEntries=entries;},redact:redactKnownTokensOnly,reload:()=>{const saved=loadConfig();for(const field of ['ownerQQ','allow','deny','allowAllWhenEmpty'])cfg[field]=saved[field];Object.assign(cfg.codex,saved.codex);Object.assign(api.config,saved.codex);roleHintCache={key:'',hint:''};}}):null;
+  async function syncWavesDeployment(){
+    if(!process.env.QBOT_CONTROL_TOKEN)throw Error('请通过 Qodex 启动页管理可选鸣潮服务');
+    const response=await fetch(`http://127.0.0.1:${cfg.controlPort}/waves/sync`,{method:'POST',headers:{authorization:`Bearer ${process.env.QBOT_CONTROL_TOKEN}`},signal:AbortSignal.timeout(45000)});
+    if(!response.ok)throw Error('鸣潮服务启动/停止未完成，请查看启动页状态');
+    const result=await response.json();if(result.error)throw Error(result.error);
+  }
+  async function reconcileWavesPolicy(){
+    for(const key of modelChat.entries.keys())if(!wavesSettings.enabled(key))await waves.cancel({key});
+    const errors=[];
+    if(wavesSettings.data.enabled){
+      try{await syncWavesDeployment();}catch(error){errors.push(error.message);}
+      try{await waves.syncPolicy();}catch(error){errors.push(error.message);}
+    }else{
+      if(wavesClient.token)try{await waves.syncPolicy();}catch(error){errors.push(error.message);}
+      try{await syncWavesDeployment();}catch(error){errors.push(error.message);}
+    }
+    if(errors.length)throw Error(errors.join('；'));
+  }
+  const wavesRoot=path.join(STATE_DIR,'waves');
+  const wavesSettings=modelDirected?new WavesSettings(path.join(STATE_DIR,'waves-settings.json')):null;
+  const wavesClient=modelDirected?new WavesClient({root:wavesRoot,base:`http://127.0.0.1:${cfg.waves.rpcPort}`}):null;
+  const waves=modelDirected?new WavesController({root:wavesRoot,settings:wavesSettings,client:wavesClient,
+    allowed:isSessionAllowedInCurrentMode,paused:key=>modelChat.isPaused(key),
+    keys:()=>[...new Set([...(cfg.allow.groups??[]).map(id=>'group:'+id),...(cfg.allow.private??[]).map(id=>'private:'+id)])],
+    sendPrivate:(qq,message,current)=>{const job=sendChain.then(async()=>{if(!current?.())throw Error('QQ 绑定私信已取消或权限已变化');return withTimeout(bot.sendPrivateMessage(Number(qq),text(escapeCqText(message))),SEND_TIMEOUT_MS,'QQ 绑定私信发送');});sendChain=job.catch(()=>{}).then(()=>sleep(cfg.sendDelayMs));return job;},
+    sendNotice:(key,qq,message)=>{
+      const [kind,id]=key.split(':'),guard=captureSendGuard(key);
+      const job=sendChain.then(async()=>{
+        if(modelChat.isPaused(key)||!wavesSettings.enabled(key)||!isSessionAllowedInCurrentMode(key))return false;
+        try{guard();}catch{return false;}
+        const content=kind==='group'?[{type:'at',data:{qq}},{type:'text',data:{text:' '+escapeCqText(message)}}]:text(escapeCqText(message));
+        await withTimeout(kind==='group'?bot.sendGroupMessage(Number(id),content):bot.sendPrivateMessage(Number(id),content),SEND_TIMEOUT_MS,'QQ 鸣潮提醒发送');
+        modelChat.append(key,{kind:'assistant',sender:'机器人',text:(kind==='group'?'@'+qq+' ':'')+message,source:'waves-notice'});return true;
+      });sendChain=job.catch(()=>{}).then(()=>sleep(cfg.sendDelayMs));return job;
+    },redact:redactKnownTokensOnly
+  }):null;
+  if(modelDirected){modelChat.waves=waves;api.installApplicationTools?.([waves.toolDefinition((threadId,requestId)=>modelChat.toolScope(threadId,requestId))],'waves-v1');}
+
+  const chatBackup=modelDirected?new ModelBackup({root:ROOT,chat:modelChat,preferences:chatPreferences,getConfig:()=>cfg,getExpression:readChatExpression,wavesSettings,getStickers:()=>stickerEntries,setStickers:(entries,persist=true)=>{if(persist)saveStickerStore(STICKER_FILE,entries);stickerEntries=entries;},redact:redactKnownTokensOnly,reload:()=>{const saved=loadConfig();for(const field of ['ownerQQ','allow','deny','allowAllWhenEmpty'])cfg[field]=saved[field];Object.assign(cfg.codex,saved.codex);Object.assign(api.config,saved.codex);roleHintCache={key:'',hint:''};}}):null;
 
   const stickerCollector = modelDirected ? new StickerCollector({
     enabled:()=>readChatExpression().autoCollectStickers&&!modelChat.paused,
@@ -6913,7 +6997,9 @@ async function main() {
         text: String(text ?? '').slice(0, 200),
         userId: senderUserId != null ? String(senderUserId) : null,
         media: extractMediaFromSegments(raw.message ?? []).filter(m=>m.kind==='image'),
-        forwardIds:extractForwardIds(raw.message ?? [])
+        forwardIds:extractForwardIds(raw.message ?? []),
+        hasVoice:Array.isArray(raw.message)&&raw.message.some(seg=>seg?.type==='record'),
+        time:raw.time!=null&&Number.isFinite(Number(raw.time))?new Date(Number(raw.time)*1000).toISOString():null
       };
       replyInfoCache.set(cacheKey, { info, ts: Date.now() });
       return info;
@@ -7649,6 +7735,8 @@ async function main() {
   async function handleIncoming(kind, id, event, cfg) {
     const key = convKey(kind, id);
     const pausedOnArrival=modelDirected&&modelChat.isPaused(key);
+    const nativeText=Array.isArray(event.message)?event.message.filter(seg=>seg?.type==='text').map(seg=>String(seg.data?.text??'')).join('').trim():'';
+    if(modelDirected&&kind==='private'&&!isSessionAllowedInCurrentMode(key)&&await waves.privateAuth({key,senderQQ:String(event.user_id),messageId:String(event.message_id??''),requestId:crypto.randomUUID()},nativeText))return;
     if (!modeAllowed(key, kind, id, cfg, currentMode)) {
       log(`忽略未授权会话 ${key}（当前模式 ${currentMode}，来自 ${event.user_id}）`);
       return;
@@ -7665,22 +7753,33 @@ async function main() {
     const plainContent = await segmentsToText(event.message ?? [], { resolveAtName, includeReply: false });
     const mediaList = extractMediaFromSegments(event.message ?? []);
     if(modelDirected){
+      if(/^ww/i.test(nativeText)){
+        const containsCredential=/(?:cookie|token|验证码|密码|手机号|授权码|设置ck|添加ck)/i.test(nativeText)||/\b1[3-9]\d{9}\b/.test(nativeText);
+        if(containsCredential){modelChat.append(key,{kind:'event',text:'鸣潮凭据输入已拦截，不保存原文；请使用 ww登录 网页绑定。'});if(!pausedOnArrival)await sendModelReply(key,'请不要在 QQ 发送手机号、验证码或凭据，请使用 ww登录 网页绑定。',()=>!modelChat.isPaused(key));return;}
+        if(!wavesSettings.enabled(key)){modelChat.append(key,{kind:'event',text:'鸣潮功能未开启：此指令未提交游戏服务或模型。'});if(!pausedOnArrival)await sendModelReply(key,'鸣潮是可选模块，当前会话未开启。请由管理员在本机安装并开启鸣潮功能。',()=>!modelChat.isPaused(key)&&isSessionAllowedInCurrentMode(key));return;}
+        const quoteId=(event.message??[]).find(seg=>seg?.type==='reply')?.data?.id,quote=quoteId&&!pausedOnArrival?await resolveReplyInfo(kind,id,String(quoteId),event.self_id):null;
+        await modelChat.receive(key,{sender:String(event.sender?.card||event.sender?.nickname||'群友')+' ('+event.user_id+')',senderQQ:String(event.user_id),messageId:String(event.message_id??''),text:nativeText,wavesCommand:nativeText,queuedAt:Date.now(),skipModel:pausedOnArrival,images:pausedOnArrival?[]:await resolveMediaList([...mediaList,...(quote?.media??[])])});return;
+      }
       const quotedId=(event.message??[]).find(seg=>seg?.type==='reply')?.data?.id;
       const quotedInfo=quotedId?await resolveReplyInfo(kind,id,String(quotedId),event.self_id):null;
       const forwardRefs=[...extractForwardIds(event.message??[]).map(fid=>({id:fid,source:'message',sourceMessageId:String(event.message_id??'')})),...(quotedInfo?.forwardIds??[]).map(fid=>({id:fid,source:'quote',sourceMessageId:String(quotedId)}))];
+      const receivedAt=new Date().toISOString();
+      const sender=`${String(event.sender?.card||event.sender?.nickname||'群友')} (${event.user_id})`;
+      const voiceRefs=[...(Array.isArray(event.message)&&event.message.some(seg=>seg?.type==='record')?[{source:'message',sourceMessageId:String(event.message_id??''),sender,time:receivedAt}]:[]),...(quotedInfo?.hasVoice?[{source:'quote',sourceMessageId:String(quotedId),sender:`${quotedInfo.sender}${quotedInfo.userId?' ('+quotedInfo.userId+')':''}`,time:quotedInfo.time}]:[])];
       const quotedMedia=quotedInfo?.media??[];
       const quotedImages=pausedOnArrival||!quotedMedia.length?[]:await resolveMediaList(quotedMedia);
       try{if(!pausedOnArrival)for(const status of await stickerCollector.collect(key,event,mediaList))modelChat.append(key,{kind:'event',text:status});}
       catch{modelChat.append(key,{kind:'event',text:'无法记录表情收藏状态，本条未自动收藏'});}
       await modelChat.receive(key,{
-        sender:`${String(event.sender?.card||event.sender?.nickname||'群友')} (${event.user_id})`,
+        sender,
+        senderQQ:String(event.user_id),
         addressing:{mentionedBot:Array.isArray(event.message)&&event.message.some(seg=>seg?.type==='at'&&String(seg.data?.qq)===String(event.self_id)),repliedToBot:await isQuoteTargetSelf(event.message??[],kind,id,event.self_id)},
         messageId:String(event.message_id??''),
-        text:textContent||'[图片或附件]',time:new Date().toISOString(),
+        text:textContent||'[图片或附件]',time:receivedAt,
         skipModel:pausedOnArrival,images:pausedOnArrival?[]:await resolveMediaList(mediaList),
         quotedImageMessageId:quotedMedia.length?String(quotedId):null,quotedImages,
         quotedImageUnavailable:quotedMedia.length>0&&!quotedImages.some(part=>part.type==='image'),
-        forwardRefs
+        forwardRefs,voiceRefs
       });
       return;
     }
@@ -8646,6 +8745,7 @@ async function main() {
   }
   startDshWatch();
   startConsoleServer();
+  if(modelDirected){let wavesPolling=false;setInterval(async()=>{if(wavesPolling||!wavesSettings.data.enabled)return;wavesPolling=true;try{await waves.poll();}catch(error){waves.operationalFailure('background-poll',error);}finally{wavesPolling=false;}},10000).unref();}
 
   await pumpMux();
 }

@@ -1,0 +1,88 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {bridgeHarness} from './audit-bridge-harness.mjs';
+import {CodexApiClient} from '../src/codex-client.js';
+import {WavesController,WavesSettings} from '../src/waves-client.js';
+const tick=()=>new Promise(r=>setTimeout(r,1));
+const operations=[];
+const config={backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max'},sendDelayMs:0};
+const h=await bridgeHarness({config,globals:{process:{env:{QBOT_CONTROL_TOKEN:'fixture-control-only'},pid:process.pid,platform:process.platform,kill:process.kill},fetch:async()=>{operations.push(['supervisor',h.wavesSettings.data.enabled]);return {ok:true,json:async()=>({error:null,ready:h.wavesSettings.data.enabled})};}}});
+const second=await bridgeHarness({config});
+try{
+ assert.equal(h.wavesSettings.data.enabled,false);assert.equal(h.modelChat.effective('group:456').voiceEnabled,false);
+ assert.equal(h.cfg.waves.remoteLoginEnabled,false);assert.equal(h.cfg.chatMemory.directory,'state/chat-memory');
+ assert.notEqual(h.waves.root,second.waves.root);assert.notEqual(h.modelChat.memory.root,second.modelChat.memory.root);
+ await h.handleIncoming('group',456,{user_id:998,message_id:'1',self_id:111,message:[{type:'text',data:{text:'ww帮助'}}]},h.cfg);
+ assert.equal(h.calls.prompts.length,0,'Disabled ww command remains exclusive');
+ const entry=h.modelChat.entry('group:456');entry.sessionId='old-binding';entry.modelSignature=JSON.stringify(['gpt-6-luna','max']);h.modelChat.save(entry);
+ const receive=id=>h.modelChat.receive('group:456',{sender:'演示成员',senderQQ:'998',text:'查询公开攻略',messageId:String(id)});
+ await receive(2);assert.equal(h.calls.created.length,0,'Disabled module preserves existing native binding');
+ assert.equal(h.calls.prompts.at(-1).context.waves,undefined);
+ let run=h.modelChat.running.get('group:456');run.text='[不回复]';await h.modelChat.consume(run.sessionId,{type:'turn/end',data:{requestId:run.id,reason:{kind:'completed'}}});
+ h.wavesSettings.data.enabled=true;
+ const originalPrompt=h.api.sessions.prompt;h.api.sessions.prompt=async()=>({result:{ok:false}});
+ await receive(3);assert.equal(entry.sessionId,'old-binding');assert.deepEqual(entry.previousBindings,[]);
+ assert(h.calls.cancelled.includes('fixture-1'),'Failed new prompt stops candidate and restores binding');
+ h.api.sessions.prompt=originalPrompt;
+ let release;const originalExpression=h.modelChat.expression;
+ h.modelChat.expression=()=>new Promise(r=>release=()=>r({stickers:[]}));
+ const cancelled=receive(4);while(!release)await tick();await h.modelChat.cancel('group:456');release();await cancelled;
+ assert.equal(entry.sessionId,'old-binding');assert.deepEqual(entry.previousBindings,[]);
+ h.modelChat.expression=originalExpression;
+ for(let i=0;i<110;i++)h.modelChat.append('group:456',{kind:'user',sender:'虚构成员',text:'有效上下文 '+i,messageId:String(1000+i)});
+ h.modelChat.memory.mutate('group:456',{action:'add',text:'演示群讨论公开攻略。',pinned:true,revision:h.modelChat.memory.read('group:456').revision});
+ await receive(5);assert.equal(h.calls.created.at(-1).applicationTools,true);
+ assert.equal(h.calls.prompts.at(-1).context.earlierMessages.length,100);
+ assert(h.calls.prompts.at(-1).context.longTermMemory.entries.length>0);
+ assert.equal(entry.previousBindings.at(-1).sessionId,'old-binding');assert(entry.messages.length>110);
+ run=h.modelChat.running.get('group:456');run.text='[不回复]';await h.modelChat.consume(run.sessionId,{type:'turn/end',data:{requestId:run.id,reason:{kind:'completed'}}});
+
+ const c=Object.create(CodexApiClient.prototype);Object.assign(c,{root:h.temp,ready:Promise.resolve(),config:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max'},tools:new Map(),records:{},live:new Set(),active:new Map(),frames:[],instructions:()=>'',listModels:h.api.listModels});
+ c.installApplicationTools([{name:'waves_game',execute:async()=>({content:[]}),inputSchema:{type:'object'}}],'waves-v1');let native=0;const starts=[];
+ c.rpc={request:async(method,params)=>{starts.push(params);return {model:'gpt-6-luna',thread:{id:'native-'+(++native)}};}};
+ await c.create({agentPreset:'qq-chat-v2'});await c.create({agentPreset:'qq-chat-v2',applicationTools:true});
+ assert.deepEqual(starts[0].dynamicTools,[]);assert.equal(starts[1].dynamicTools[0].name,'waves_game');
+ c.cancelled=new Set();c.active.set('native-1','turn');await assert.rejects(c.toolCall('item/tool/call',{threadId:'native-1',tool:'waves_game',callId:'forged',arguments:{}}),/not enabled/);
+
+ fs.mkdirSync(path.join(h.temp,'roles'),{recursive:true});
+ const old=h.chatBackup.export(true);delete old.sections.waves;delete old.sections.settings.expression.voiceEnabled;
+ for(const value of Object.values(old.sections.conversations))delete value.voiceEnabled;
+ const validated=h.chatBackup.validate(old,await h.api.listModels());assert.equal(validated.sections.settings.expression.voiceEnabled,false);
+ assert.equal(validated.sections.conversations['group:456'].voiceEnabled,null);
+ h.wavesClient.token='fixture-optional-only';h.wavesClient.call=async(route,body)=>{operations.push([route,body]);return {};};
+ const server=h.startConsoleServer();if(!server.listening)await new Promise(r=>server.once('listening',r));
+ try{
+  const endpoint='http://127.0.0.1:'+server.address().port;
+  const asset={id:'fixture-game-image',key:'group:456',taskId:'fixture-task',runId:'fixture-run',path:path.join(h.waves.root,'results','fixture-task','image.png')};
+  fs.mkdirSync(path.dirname(asset.path),{recursive:true});fs.writeFileSync(asset.path,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=','base64'));
+  entry.wavesImages=[asset];h.modelChat.save(entry);
+  const imageRoute='/api/waves/image-preview?key=group%3A456&id=fixture-game-image',auth={'x-console-token':'fixture-console-token'};
+  assert.equal((await fetch(endpoint+imageRoute)).status,401);
+  assert.equal((await fetch(endpoint+imageRoute,{headers:{...auth,origin:'https://other.invalid'}})).status,403);
+  assert.equal((await fetch(endpoint+imageRoute.replace('456','789'),{headers:auth})).status,404);
+  const image=await fetch(endpoint+imageRoute,{headers:auth});assert.equal(image.status,200);assert.equal((await image.json()).image.mimeType,'image/png');
+  const backup=h.chatBackup.export();backup.sections.waves.enabled=false;
+  const preview=h.chatBackup.preview(backup,await h.api.listModels());
+  const result=await fetch('http://127.0.0.1:'+server.address().port+'/api/chat/backup/restore',{method:'POST',headers:{'x-console-token':'fixture-console-token','content-type':'application/json'},body:JSON.stringify({id:preview.id,sections:['waves']})});
+  assert.equal(result.status,200);assert.equal((await result.json()).policySynced,true);
+  assert.equal(operations.find(x=>x[0]==='/v1/policy')[1].allowedKeys.length,0);
+  assert.deepEqual(operations.at(-1),['supervisor',false]);assert(!operations.some(x=>x[0]==='/v1/subscriptions'));
+  let subscriptionRelease,subscriptionWrites=0;
+  h.wavesClient.call=async(route)=>{if(route==='/v1/subscriptions'){subscriptionWrites++;await new Promise(r=>subscriptionRelease=r);}return {};};
+  const stopBody=JSON.stringify({key:'group:456',senderQQ:'998',signEnabled:false,reminderEnabled:false,revision:h.wavesSettings.data.revision});
+  const stop=()=>fetch(endpoint+'/api/waves/subscriptions',{method:'POST',headers:{...auth,'content-type':'application/json'},body:stopBody});
+  const stopping=stop();while(!subscriptionRelease)await tick();assert.equal((await stop()).status,409);
+  subscriptionRelease();assert.equal((await stopping).status,200);assert.equal(subscriptionWrites,1,'Stale subscription write rejected before adapter mutation');
+ }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
+
+ const policySettings=new WavesSettings(path.join(h.temp,'policy-settings.json'));policySettings.data.enabled=true;
+ const bodies=[],releases=[];let active=0,maxActive=0;
+ const controller=new WavesController({root:path.join(h.temp,'policy'),settings:policySettings,keys:()=>['group:456'],allowed:()=>true,paused:()=>false,client:{call:async(route,body)=>{bodies.push(body);maxActive=Math.max(maxActive,++active);await new Promise(r=>releases.push(()=>{active--;r();}));}},sendPrivate:async()=>{},sendNotice:async()=>true});
+ const a=controller.syncPolicy();while(!releases.length)await tick();
+ const b=controller.syncPolicy();policySettings.data.enabled=false;const d=controller.syncPolicy();
+ releases.shift()();while(!releases.length)await tick();assert.deepEqual(bodies[1].allowedKeys,[]);
+ releases.shift()();while(!releases.length)await tick();assert.deepEqual(bodies[2].allowedKeys,[]);releases.shift()();
+ await Promise.all([a,b,d]);assert.equal(maxActive,1,'Native permission writes serialize and recompute latest state');
+ console.log('PASS v0.5 defaults, two-deployment isolation, opt-in tools, migration failure/cancel/history/memory, v0.4 backup defaults, restore lifecycle and concurrent policy revocation');
+}finally{await second.close();await h.close();}

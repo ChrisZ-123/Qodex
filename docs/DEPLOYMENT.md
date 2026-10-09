@@ -1,6 +1,6 @@
 # Windows 部署与运行
 
-本指南面向 `qodex-v0.4.0` 预览版。当前支持 Windows 部署；全新安装仍需按下文逐项检查。Qodex 需要本机持续运行，电脑睡眠、关机或断网时不能回复。
+本指南面向 `qodex-v0.5.0` 预览版。当前支持 Windows 部署；全新安装仍需按下文逐项检查。Qodex 需要本机持续运行，电脑睡眠、关机或断网时不能回复。鸣潮可选且默认关闭，实验性语音默认关闭。
 
 ## 1. 准备依赖
 
@@ -29,7 +29,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1
 
 安装向导不会默认覆盖已有配置；再次运行主要用于检查当前安装。白名单默认是空的，`allowAllWhenEmpty=false`，因此配置完成前**不会响应任何群或私聊**。向导要求至少填写一个允许的群或私聊；先只放行你准备试用的目标。若填写 SnowLuma 启动器路径，Qodex 启动时会在 OneBot WebSocket 不可达的情况下尝试启动它；没有填写时仍可自行启动 SnowLuma。
 
-建议从 `gpt-6-luna` / `max` / 标准速度开始。Qodex 启动时会检查独立登录账号可用的模型和推理强度，不会自动降级到别的模型。公开默认生图为“仅明确请求”、表情为“自然适量”；在控制台可关闭或单独调整。主动生图会增加用量。可选 `priority` 速度可能影响与其他 Codex 使用共享的额度，也不保证固定倍率提速。首版记录的本机环境为 Node 24.18.1、`codex-cli 0.155.0-alpha.16` 和 SnowLuma 1.14.17；这不是 v0.4.0 在新机器或未来版本的兼容性承诺。
+建议从 `gpt-6-luna` / `max` / 标准速度开始。Qodex 启动时会检查独立登录账号可用的模型和推理强度，不会自动降级到别的模型。公开默认生图为“仅明确请求”、表情为“自然适量”；在控制台可关闭或单独调整。主动生图会增加用量。可选 `priority` 速度可能影响与其他 Codex 使用共享的额度，也不保证固定倍率提速。首版记录的本机环境为 Node 24.18.1、`codex-cli 0.155.0-alpha.16` 和 SnowLuma 1.14.17；这不是 v0.5.0 在新机器或未来版本的兼容性承诺。
 
 ## 3. 启动与检查
 
@@ -69,3 +69,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Control.ps
 从 v0.3.0 升级到 v0.4.0 时，先停止进程，备份**整个旧部署目录及外部记忆目录**，再更新。独立登录和可选原生会话迁移步骤见[v0.4.0 升级与回退指南](UPGRADE_V040.md)。旧 v0.2.0 用户先看[v0.3.0 升级指南](UPGRADE_V030.md)。仅下载控制台 JSON 不能完成整套部署回退；生成图片文件和独立 Codex 登录状态须按本机敏感数据分别保护。若 `git pull --ff-only` 因本地改动或分叉失败，先检查差异；不要强制重置或覆盖本地数据。
 
 故障定位见[排查指南](TROUBLESHOOTING.md)，配置含义见[配置说明](CONFIGURATION.md)。
+
+## 可选鸣潮安装
+
+保持上述Windows/Codex独立登录路径。需要游戏模块时，另行安装Python3.11 x64，并执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Install-Waves.ps1 -Python "C:\Python311\python.exe"
+```
+
+仅明确需要远程自助绑定时追加 `-RemoteLogin`。安装器从官方/作者来源下载固定提交与资源到本部署 `state/waves`，仓库不携带第三方二进制或游戏素材。完成后重启Qodex加载安全密钥，再在鸣潮分区显式开启游戏开关；`remoteLoginEnabled` 独立控制，公开默认false。RPC8788、登录8789、隧道指标8790须与现有端口不同。
+
+启动面板管理本部署的游戏进程与可选隧道；重复启动与停止归属以状态/验证输出为准，不批量结束其他部署。QQ、Codex仍需各自独立登录。Quick Tunnel是临时开发入口，无可用性保证且域名会变化；不公开控制台、OneBot或RPC。本人绑定与订阅步骤见[鸣潮指南](WAVES.md)。从v0.4升级与完整回退见[v0.5指南](UPGRADE_V050.md)。

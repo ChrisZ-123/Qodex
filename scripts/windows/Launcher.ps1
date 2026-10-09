@@ -39,6 +39,10 @@ $script:buttons = @()
 
 function Start-ControlAction([string]$Action) {
     if ($script:worker) { return }
+    if ($Action -eq 'InstallWavesRemote') {
+        $answer = [Windows.Forms.MessageBox]::Show('配置后，小游戏启用期间的本机 Waves 登录端口会通过 Cloudflare 公共 HTTPS 地址开放，用于账号登录和二维码。不会公开聊天控制台或 RPC。是否继续下载已校验的官方隧道程序？', '配置 Waves 远程登录', [Windows.Forms.MessageBoxButtons]::YesNo, [Windows.Forms.MessageBoxIcon]::Warning)
+        if ($answer -ne [Windows.Forms.DialogResult]::Yes) { return }
+    }
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = Join-Path $PSHOME 'powershell.exe'
     if ($Action -eq 'LoginCodex') {
@@ -51,6 +55,9 @@ function Start-ControlAction([string]$Action) {
         foreach ($button in $script:buttons) { $button.Enabled = $false }
         $script:outputBox.Text = '已打开独立 Codex 登录窗口。请在该窗口中完成官方登录，然后回到这里检查状态。'
         return
+    } elseif ($Action -in @('InstallWaves','InstallWavesRemote')) {
+        $info.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $root 'scripts\windows\Install-Waves.ps1') + '"'
+        if ($Action -eq 'InstallWavesRemote') { $info.Arguments += ' -RemoteLogin' }
     } else {
         $info.Arguments = '-NoProfile -ExecutionPolicy Bypass -STA -File "' + (Join-Path $root 'scripts\windows\Control.ps1') + '" -Action ' + $Action
     }
@@ -68,7 +75,7 @@ function Start-ControlAction([string]$Action) {
 $entries = @(
     @('启动 Qodex', 'Start'), @('停止 Qodex', 'Stop'), @('检查状态', 'Status'), @('验证连接', 'Verify'),
     @('打开控制台', 'OpenConsole'), @('打开 SnowLuma', 'OpenSnowLuma'), @('启用登录自启', 'EnableAutoStart'), @('关闭登录自启', 'DisableAutoStart'),
-    @('登录 Codex（独立）', 'LoginCodex')
+    @('登录 Codex（独立）', 'LoginCodex'), @('安装 Waves', 'InstallWaves'), @('配置 Waves 远程登录', 'InstallWavesRemote')
 )
 for ($i = 0; $i -lt $entries.Count; $i++) {
     $button = New-Object Windows.Forms.Button
@@ -105,6 +112,11 @@ $timer.Add_Tick({
                 )
                 if ($script:workerAction -eq 'Verify') { $lines += "QQ 在线：$($data.qqOnline)" }
                 if ($data.startupError) { $lines += "启动错误：$($data.startupError)" }
+                if ($data.waves) {
+                    $lines += "小游戏：已安装=$($data.waves.installed) / 已启用=$($data.waves.enabled) / 就绪=$($data.waves.ready)"
+                    $lines += "远程登录：已配置=$($data.waves.remoteLoginEnabled) / 就绪=$($data.waves.remoteReady)"
+                    if ($data.waves.error) { $lines += "小游戏错误：$($data.waves.error)" }
+                }
                 $script:outputBox.Text = $lines -join "`r`n"
             } catch { $script:outputBox.Text = $out }
         } else { $script:outputBox.Text = $out }

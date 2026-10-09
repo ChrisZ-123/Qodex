@@ -6,10 +6,11 @@ import crypto from 'node:crypto';
 import readline from 'node:readline';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {WavesSupervisor} from './waves-supervisor.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const state={children:new Map(),startupError:null,stopping:false};
-const secrets={onebot:process.env.QBOT_ONEBOT_TOKEN??'',console:process.env.QBOT_CONSOLE_TOKEN??'',control:process.env.QBOT_CONTROL_TOKEN??''};
+const secrets={onebot:process.env.QBOT_ONEBOT_TOKEN??'',console:process.env.QBOT_CONSOLE_TOKEN??'',control:process.env.QBOT_CONTROL_TOKEN??'',waves:process.env.QBOT_WAVES_TOKEN??''};
 const logPath=path.join(root,'logs','windows-supervisor.log');
 fs.mkdirSync(path.dirname(logPath),{recursive:true});
 function log(kind,value){
@@ -39,6 +40,8 @@ function isOpen(targetPort){return new Promise(resolve=>{
   const done=value=>{if(finished)return;finished=true;socket.destroy();resolve(value);};
   socket.setTimeout(500);socket.once('connect',()=>done(true));socket.once('error',()=>done(false));socket.once('timeout',()=>done(false));
 });}
+const waves=new WavesSupervisor({root,basePorts:[consolePort,controlPort,ws.qodexPort,httpUrl.qodexPort,webUi.qodexPort],token:secrets.waves,isOpen,log});
+try{waves.read();}catch{waves.error='Waves settings or port configuration is invalid';}
 function startChild(name,command,args,cwd,verbatim=false){
   const child=spawn(command,args,{cwd,env:process.env,windowsHide:true,windowsVerbatimArguments:verbatim,stdio:['ignore','pipe','pipe']});
   state.children.set(name,child);
@@ -64,7 +67,7 @@ async function qqStatus(){
 async function status(verify=false){
   let bridge;try{bridge=await bridgeStatus();}catch{}
   const services=Object.fromEntries([...state.children].map(([name,child])=>[name,{running:child.exitCode===null,pid:child.pid}]));
-  const result={running:!state.stopping,backend:'codex',model:bridge?.model??config.codex.model,reasoningEffort:bridge?.reasoningEffort??config.codex.reasoningEffort,serviceTier:bridge?.serviceTier??config.codex.serviceTier,modelReady:bridge?.dshReady===true,bridgeReady:!!bridge,services,startupError:state.startupError,ports:{console:consolePort,control:controlPort}};
+  const result={running:!state.stopping,backend:'codex',model:bridge?.model??config.codex.model,reasoningEffort:bridge?.reasoningEffort??config.codex.reasoningEffort,serviceTier:bridge?.serviceTier??config.codex.serviceTier,modelReady:bridge?.dshReady===true,bridgeReady:!!bridge,services,startupError:state.startupError,ports:{console:consolePort,control:controlPort},waves:waves.status()};
   if(verify){result.qqOnline=await qqStatus();result.mode=bridge?.mode??'model';result.groupCount=config.allow?.groups?.length??0;result.privateCount=config.allow?.private?.length??0;}
   return result;
 }
@@ -86,6 +89,7 @@ let server;
 async function stop(){
   if(state.stopping)return;
   state.stopping=true;
+  await waves.close();
   try{
     await fetch(`http://127.0.0.1:${consolePort}/api/backend/stop`,{method:'POST',headers:{'x-console-token':secrets.console,'content-type':'application/json'},body:'{}',signal:AbortSignal.timeout(8000)});
   }catch{log('stop','Bridge graceful cancellation was unavailable');}
@@ -100,6 +104,7 @@ server=http.createServer(async(req,res)=>{
   try{
     if(req.url==='/status'&&req.method==='GET'){res.end(JSON.stringify(await status()));return;}
     if(req.url==='/verify'&&req.method==='GET'){res.end(JSON.stringify(await status(true)));return;}
+    if(req.url==='/waves/sync'&&req.method==='POST'){if(state.stopping){res.writeHead(409).end(JSON.stringify({error:'Stopping'}));return;}res.end(JSON.stringify(await waves.sync()));return;}
     if(req.url==='/stop'&&req.method==='POST'){res.end(JSON.stringify({stopping:true}));void stop();return;}
     res.writeHead(404).end(JSON.stringify({error:'Unknown action'}));
   }catch{res.writeHead(503).end(JSON.stringify({error:'Local service unavailable'}));}
@@ -118,6 +123,7 @@ async function launch(){
     startChild('snowluma',isBatch?(process.env.ComSpec??'cmd.exe'):launcher,isBatch?['/d','/s','/c',`""${launcher}""`]:[],path.dirname(launcher),isBatch);
   }
   startChild('bridge',process.execPath,[path.join(root,'src','bridge.js')],root);
+  void waves.sync().catch(()=>{waves.error='Waves optional startup failed';});
 }
 if(await isOpen(controlPort)){log('startup',`Control port ${controlPort} is occupied`);process.exit(1);}
 server.listen(controlPort,'127.0.0.1',()=>{void launch().catch(error=>fail(error.message));});

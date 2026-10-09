@@ -13,6 +13,7 @@ import * as wait from '../src/v2-wait.js';
 import * as safeFetch from '../src/safe-fetch.js';
 import * as forward from '../src/forward.js';
 import {expandModelForwards} from '../src/model-forward.js';
+import {transcribeModelVoices} from '../src/model-voice.js';
 import * as slang from '../src/slang-learner.js';
 import * as sticker from '../src/sticker-lib.js';
 import * as stickerLearning from '../src/sticker-learning.js';
@@ -23,6 +24,7 @@ import { ChatMemory } from '../src/chat-memory.js';
 import { ModelPreferences } from '../src/model-preferences.js';
 import { ModelBackup } from '../src/model-backup.js';
 import { loadGeneratedImage } from '../src/generated-images.js';
+import {WavesClient,WavesSettings,WavesController,loadWavesAsset,safeGameText} from '../src/waves-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 export async function bridgeHarness({ config = {}, savedState, globals = {} } = {}) {
@@ -36,10 +38,11 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
   }));
   if (savedState) fs.writeFileSync(path.join(temp, 'state/sessions.json'), JSON.stringify(savedState));
   const calls = { created: [], archived: [], sent: [], prompts: [], follows: [], cancelled: [] };
-  const forwardReplies=new Map(),messages=new Map();
+  const forwardReplies=new Map(),voiceReplies=new Map(),messages=new Map();
   const success = (value) => ({ result: { ok: true, value } });
   const api = {
     config:{},
+    installApplicationTools(tools,version){this.toolGeneration=version;this.applicationTools=tools;},
     listModels:async()=>[{model:'gpt-6-luna',name:'GPT-6 Luna',efforts:['high','max'],defaultEffort:'high'},{model:'fixture-model',name:'Fixture',efforts:['low'],defaultEffort:'low'}],
     events: { follow: (id) => calls.follows.push(id) },
     workspace: {
@@ -56,7 +59,7 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     callUnary: async (method, params) => { calls.cancelled.push({ method, params }); return success({ accepted: true }); },
   };
   class FakeBot {
-    async raw(method,{id}={}) { if(method==='get_forward_msg'&&forwardReplies.has(String(id)))return forwardReplies.get(String(id));throw Error('Fixture forward unavailable'); }
+    async raw(method,{id,message_id}={}) { if(method==='get_forward_msg'&&forwardReplies.has(String(id)))return forwardReplies.get(String(id));if(method==='get_record_text'&&voiceReplies.has(String(message_id))){const result=voiceReplies.get(String(message_id));if(result instanceof Error)throw result;return result;}throw Error('Fixture action unavailable'); }
     async getMessage(id) { return messages.get(String(id))??null; }
     async sendPrivateMessage(id, text) { calls.sent.push({ kind: 'private', id, text }); }
     async sendGroupMessage(id, text) { calls.sent.push({ kind: 'group', id, text }); }
@@ -64,13 +67,14 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
   }
   let source = fs.readFileSync(path.join(root, 'src/bridge.js'), 'utf8');
   source = source.replace(/^import\s[\s\S]*?;\r?\n/gm, '');
+  source = source.replace("path.resolve(ROOT,'..','waves')","path.join(ROOT,'waves-runtime')");
   source = source.replaceAll('import.meta.url', JSON.stringify(pathToFileURL(path.join(temp, 'src/bridge.js')).href));
   source = source.slice(0, source.indexOf("process.on('SIGINT'"));
   source = source.replace('  bot.onPrivateMessage(async (event) => {', `
   return {
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, drainPromptQueue,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
-    pumpMux, isConversationBusyV2, modelChat, chatPreferences, chatBackup,
+    pumpMux, isConversationBusyV2, modelChat, chatPreferences, chatBackup, waves, wavesClient, wavesSettings,
     setMode(value) { currentMode = value; },
     setReady(value) { dshReady = value; },
     setPresets(value) { dshPresetIds = value; dshDefaultPreset = 'standard'; },
@@ -84,18 +88,18 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timers.add(timer); return timer; },
     clearTimeout, setInterval: () => ({ unref() {} }), clearInterval: () => {},
     NodeApiClient: class { constructor() { return api; } },
-    CodexApiClient: class { constructor() { return api; } }, ModelChat, DEFAULT_CHAT_STYLE, StickerCollector, ModelPreferences, ModelBackup,
+    CodexApiClient: class { constructor() { return api; } }, ModelChat, DEFAULT_CHAT_STYLE, StickerCollector, ModelPreferences, ModelBackup,WavesClient,WavesSettings,WavesController,loadWavesAsset,safeGameText,
     ChatMemory,loadGeneratedImage,
     SnowLumaWebSocketClient: FakeBot, text: (s) => s,
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector,
-    ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, expandModelForwards, ...slang, ...sticker, ...stickerLearning,
+    ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, expandModelForwards, transcribeModelVoices, ...slang, ...sticker, ...stickerLearning,
     ...globals,
   });
   vm.runInContext(source + '\nglobalThis.auditReady = main();', context);
   const bridge = await context.auditReady;
   bridge.setPresets(['standard', 'qq-chat', 'qq-chat-v2']);
   bridge.setReady(true);
-  return { ...bridge, calls, temp, setForward:(id,data)=>forwardReplies.set(String(id),data),setMessage:(id,data)=>messages.set(String(id),data),async close() {
+  return { ...bridge, calls, temp, setForward:(id,data)=>forwardReplies.set(String(id),data),setVoice:(id,data)=>voiceReplies.set(String(id),data),setMessage:(id,data)=>messages.set(String(id),data),async close() {
     for (const timer of timers) clearTimeout(timer);
     fs.rmSync(temp, { recursive: true, force: true });
   } };

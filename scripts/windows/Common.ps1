@@ -141,12 +141,43 @@ function Write-QodexInitialization([string]$Root, [object]$Config, [object]$Secr
         Move-Item -LiteralPath $secretTmp -Destination $secretPath -ErrorAction Stop
         $secretInstalled = $true
         Move-Item -LiteralPath $configTmp -Destination $configPath -ErrorAction Stop
+        $wavesSettingsPath = Join-Path $stateDir 'waves-settings.json'
+        if (-not (Test-Path -LiteralPath $wavesSettingsPath)) {
+            [IO.File]::WriteAllText($wavesSettingsPath, '{"version":1,"revision":0,"enabled":false,"conversations":{}}', (New-Object Text.UTF8Encoding($false)))
+        }
     } catch {
         if ($secretInstalled -and -not (Test-Path -LiteralPath $configPath)) { Remove-Item -LiteralPath $secretPath -Force -ErrorAction SilentlyContinue }
         throw
     } finally {
         Remove-Item -LiteralPath $secretTmp, $configTmp -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Get-QodexWavesConfig([object]$Config) {
+    $waves = [ordered]@{rpcPort=8788;loginPort=8789;tunnelMetricsPort=8790;remoteLoginEnabled=$false}
+    if ($null -ne $Config.waves) {
+        foreach ($name in @('rpcPort','loginPort','tunnelMetricsPort','remoteLoginEnabled')) {
+            if ($Config.waves.PSObject.Properties[$name]) { $waves[$name] = $Config.waves.$name }
+        }
+    }
+    foreach ($name in @('rpcPort','loginPort','tunnelMetricsPort')) { $waves[$name] = Assert-QodexPort $waves[$name] "waves.$name" }
+    if ($waves.remoteLoginEnabled -isnot [bool]) { throw 'waves.remoteLoginEnabled 必须是布尔值。' }
+    $base = @([int]([Uri]$Config.snowluma.wsUrl).Port, [int]([Uri]$Config.snowluma.httpUrl).Port, [int]([Uri]$Config.snowluma.webUiUrl).Port, [int]$Config.consolePort, [int]$Config.controlPort)
+    $ports = $base + @($waves.rpcPort,$waves.loginPort,$waves.tunnelMetricsPort)
+    if (@($ports | Select-Object -Unique).Count -ne 8) { throw 'Waves 和基础服务端口必须各不相同。' }
+    return [pscustomobject]$waves
+}
+
+function Add-QodexWavesSecret([string]$Root) {
+    $secrets = Unprotect-QodexSecretObject $Root
+    if ($secrets.PSObject.Properties['waves'] -and [string]$secrets.waves -match '^[a-f0-9]{64}$') { return }
+    $secrets | Add-Member -NotePropertyName waves -NotePropertyValue (New-QodexToken) -Force
+    $secretPath = Join-Path $Root 'state\secrets.dpapi'
+    $temporary = Join-Path $Root ('state\secrets.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        [IO.File]::WriteAllText($temporary, (Protect-QodexSecretObject $secrets), [Text.Encoding]::ASCII)
+        [IO.File]::Replace($temporary, $secretPath, "$temporary.previous")
+    } finally { Remove-Item -LiteralPath $temporary,"$temporary.previous" -Force -ErrorAction SilentlyContinue }
 }
 
 function Test-QodexPortOpen([int]$Port) {

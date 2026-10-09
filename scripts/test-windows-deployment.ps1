@@ -50,9 +50,45 @@ function Check-WrongAuth([int]$Port) {
     }
 }
 
+function Test-CloudflaredInstaller {
+    $script:fixtureCloudDigest = $null
+    $script:fixtureCloudMismatch = $false
+    $bytes = [Text.Encoding]::ASCII.GetBytes('fixture official asset')
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $script:fixtureCloudDigest = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-','').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    function Invoke-RestMethod {
+        param($Uri,$Headers,$TimeoutSec)
+        Assert ($Uri -eq 'https://api.github.com/repos/cloudflare/cloudflared/releases/tags/2026.10.0') 'Cloudflared installer used an unpinned release.'
+        return [pscustomobject]@{tag_name='2026.10.0';draft=$false;prerelease=$false;assets=@([pscustomobject]@{name='cloudflared-windows-amd64.exe';browser_download_url='https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/cloudflared-windows-amd64.exe';digest=('sha256:' + $script:fixtureCloudDigest)})}
+    }
+    function Invoke-WebRequest {
+        param($Uri,$OutFile,[switch]$UseBasicParsing,$TimeoutSec)
+        if ($Uri -eq 'https://raw.githubusercontent.com/cloudflare/cloudflared/2026.10.0/LICENSE') { [IO.File]::WriteAllText($OutFile,'Apache License fixture') }
+        elseif ($Uri -eq 'https://github.com/cloudflare/cloudflared/releases/download/2026.10.0/cloudflared-windows-amd64.exe') {
+            [IO.File]::WriteAllText($OutFile, $(if ($script:fixtureCloudMismatch) {'wrong asset'} else {'fixture official asset'}), [Text.Encoding]::ASCII)
+        } else { throw 'Unexpected Cloudflared download source.' }
+    }
+    $parseErrors = $null
+    $tokens = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $fixtureRoot 'scripts\windows\Install-Waves.ps1'), [ref]$tokens, [ref]$parseErrors)
+    Assert ($parseErrors.Count -eq 0) 'Install-Waves.ps1 did not parse.'
+    $functionAst = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Install-QodexCloudflared'},$true)
+    Invoke-Expression $functionAst.Extent.Text
+    $tools = Join-Path $fixtureRoot 'mock tools 中文'
+    Install-QodexCloudflared $tools
+    Assert ((Get-Content -LiteralPath (Join-Path $tools 'cloudflared.exe') -Raw) -eq 'fixture official asset') 'Verified official asset was not installed.'
+    Assert (Test-Path -LiteralPath (Join-Path $tools 'LICENSE')) 'Official LICENSE was not installed.'
+    $script:fixtureCloudMismatch = $true
+    $rejected = $false
+    try { Install-QodexCloudflared $tools } catch { $rejected = $true }
+    Assert $rejected 'Cloudflared digest mismatch was accepted.'
+    Assert ((Get-Content -LiteralPath (Join-Path $tools 'cloudflared.exe') -Raw) -eq 'fixture official asset') 'Digest mismatch overwrote verified asset.'
+}
+
 try {
     $null = New-Item -ItemType Directory -Path (Join-Path $fixtureRoot 'scripts\windows'), (Join-Path $fixtureRoot 'src'), (Join-Path $fixtureRoot 'fake SnowLuma 中文') -Force
-    foreach ($file in @('Common.ps1','Setup.ps1','Control.ps1','Launcher.ps1','supervisor.mjs')) {
+    foreach ($file in @('Common.ps1','Setup.ps1','Control.ps1','Launcher.ps1','supervisor.mjs','waves-supervisor.mjs','Install-Waves.ps1')) {
         Copy-Item -LiteralPath (Join-Path $sourceRoot "scripts\windows\$file") -Destination (Join-Path $fixtureRoot "scripts\windows\$file")
     }
     Copy-Item -LiteralPath (Join-Path $sourceRoot 'Setup.ps1') -Destination (Join-Path $fixtureRoot 'Setup.ps1')
@@ -62,6 +98,7 @@ try {
     Assert (-not (Test-Path -LiteralPath (Join-Path $fixtureRoot 'config.json'))) 'Setup wrote config after dependency failure.'
 
     . (Join-Path $fixtureRoot 'scripts\windows\Common.ps1')
+    Test-CloudflaredInstaller
     $ports = @()
     while ($ports.Count -lt 5) {
         $candidate = Get-FreePort
@@ -90,12 +127,29 @@ try {
     $secrets = [pscustomobject]@{onebot='fixture-onebot';console=(New-QodexToken);control=(New-QodexToken)}
     Write-QodexInitialization $fixtureRoot $config $secrets
     $launcherCheck = Invoke-FixtureScript (Join-Path $fixtureRoot 'scripts\windows\Launcher.ps1') 'ValidateOnly'
-    Assert ($launcherCheck.code -eq 0 -and $launcherCheck.out -match '9 actions') ("Launcher validation failed: " + $launcherCheck.err)
+    Assert ($launcherCheck.code -eq 0 -and $launcherCheck.out -match '11 actions') ("Launcher validation failed: " + $launcherCheck.err)
     $encrypted = Get-Content -LiteralPath (Join-Path $fixtureRoot 'state\secrets.dpapi') -Raw
     $plainConfig = Get-Content -LiteralPath (Join-Path $fixtureRoot 'config.json') -Raw
     Assert ($encrypted -notmatch 'fixture-onebot' -and $plainConfig -notmatch 'fixture-onebot' -and $plainConfig -notmatch [regex]::Escape($secrets.control)) 'A secret leaked to config or DPAPI ciphertext.'
     $decoded = Unprotect-QodexSecretObject $fixtureRoot
     Assert ($decoded.onebot -eq $secrets.onebot -and $decoded.control -eq $secrets.control) 'DPAPI roundtrip failed.'
+    Add-QodexWavesSecret $fixtureRoot
+    $withWaves = Unprotect-QodexSecretObject $fixtureRoot
+    Assert ($withWaves.waves -match '^[a-f0-9]{64}$' -and $withWaves.onebot -eq $decoded.onebot -and $withWaves.control -eq $decoded.control -and $withWaves.console -eq $decoded.console) 'Adding Waves secret changed existing DPAPI fields.'
+    Add-QodexWavesSecret $fixtureRoot
+    Assert ((Unprotect-QodexSecretObject $fixtureRoot).waves -eq $withWaves.waves) 'Repeated Waves secret installation changed the secret.'
+    Assert ((Get-Content -LiteralPath (Join-Path $fixtureRoot 'state\waves-settings.json') -Raw | ConvertFrom-Json).enabled -eq $false) 'Base setup enabled Waves.'
+    # Load the production validator instead of mirroring its required fields.
+    $node = Get-QodexNode
+    $env:QODEX_WAVES_FIXTURE_FILE = Join-Path $fixtureRoot 'state\waves-settings.json'
+    try {
+        $wavesModule = ([Uri](Join-Path $sourceRoot 'src\waves-client.js')).AbsoluteUri
+        $validator = 'import {WavesSettings} from ' + (ConvertTo-Json -InputObject $wavesModule -Compress) + '; const settings=new WavesSettings(process.env.QODEX_WAVES_FIXTURE_FILE); if(settings.enabled("group:12345")||settings.data.revision!==0)throw Error("Invalid base Waves defaults");'
+        $validatorPath = Join-Path $fixtureRoot 'validate-waves-settings.mjs'
+        [IO.File]::WriteAllText($validatorPath, $validator, (New-Object Text.UTF8Encoding($false)))
+        & $node $validatorPath
+        Assert ($LASTEXITCODE -eq 0) 'Production WavesSettings rejected the initialized defaults.'
+    } finally { Remove-Item Env:\QODEX_WAVES_FIXTURE_FILE -ErrorAction SilentlyContinue }
     $repeat = $false
     try { Write-QodexInitialization $fixtureRoot $config $secrets } catch { $repeat = $true }
     Assert $repeat 'Repeated initialization did not refuse overwrite.'
@@ -145,6 +199,12 @@ server.listen(config.consolePort,'127.0.0.1');
     Assert ($started.code -eq 0) ("Fixture start failed: " + $started.err + $started.out)
     $startedStatus = $started.out | ConvertFrom-Json
     Assert ($startedStatus.bridgeReady -and $startedStatus.modelReady) 'Fixture bridge was not ready.'
+    Assert ($startedStatus.waves.enabled -eq $false -and $startedStatus.waves.ready -eq $false -and $startedStatus.waves.remoteReady -eq $false) 'Disabled Waves started optional children.'
+    [IO.File]::WriteAllText((Join-Path $fixtureRoot 'state\waves-settings.json'), '{"enabled":true}', [Text.Encoding]::ASCII)
+    $sync = Invoke-RestMethod -Uri "http://127.0.0.1:$controlPort/waves/sync" -Method Post -Headers @{Authorization="Bearer $($secrets.control)"} -TimeoutSec 5
+    Assert ($sync.enabled -and -not $sync.ready -and $sync.error -match 'dependencies missing') 'Optional missing dependency was not reported.'
+    $baseAfterOptionalFailure = Invoke-RestMethod -Uri "http://127.0.0.1:$controlPort/status" -Headers @{Authorization="Bearer $($secrets.control)"} -TimeoutSec 3
+    Assert ($baseAfterOptionalFailure.bridgeReady -and -not $baseAfterOptionalFailure.startupError) 'Optional failure stopped ordinary chat.'
     Assert (Check-WrongAuth $controlPort) ("Control wrong-token check failed: " + $script:authObservation)
     $verify = Invoke-FixtureScript (Join-Path $fixtureRoot 'scripts\windows\Control.ps1') 'Verify'
     Assert ($verify.code -eq 0 -and (($verify.out | ConvertFrom-Json).qqOnline -eq $false)) 'Read-only verify failed.'

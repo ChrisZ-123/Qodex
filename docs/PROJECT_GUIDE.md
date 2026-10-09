@@ -1,6 +1,6 @@
 # 项目指南
 
-Qodex `qodex-v0.4.0` 是基于 [Derpyu520/qq-bridge 提交 dea3ce8](https://github.com/Derpyu520/qq-bridge/commit/dea3ce8) 的公开预览 fork。当前受支持的发布路径是 **Windows + SnowLuma OneBot + 本部署独立 Codex ChatGPT 登录 + `conversationMode: model`**。源码中保留了一些 DSH 时代的内部模块和脚本，供改造过程参考；这些不是本版安装所需或受支持的后端接口。不要运行旧 `setup-dsh.mjs` 作为 Qodex 安装步骤。
+Qodex `qodex-v0.5.0` 是基于 [Derpyu520/qq-bridge 提交 dea3ce8](https://github.com/Derpyu520/qq-bridge/commit/dea3ce8) 的公开预览 fork。当前受支持的发布路径是 **Windows + SnowLuma OneBot + 本部署独立 Codex ChatGPT 登录 + `conversationMode: model`**。鸣潮为默认关闭的可选Python3.11模块，语音转写默认关闭且实验性。源码中保留了一些 DSH 时代的内部模块和脚本，供改造过程参考；这些不是本版安装所需或受支持的后端接口。不要运行旧 `setup-dsh.mjs` 作为 Qodex 安装步骤。
 
 ## 消息路径
 
@@ -56,3 +56,11 @@ Codex 子进程使用 `state/codex-home` 内独立的官方 ChatGPT 登录，启
 `state/` 包含会话映射、聊天历史、分会话覆盖和反馈、表情资料、生成图片、独立 Codex 登录、DPAPI 令牌状态及日志。`chatMemory.directory` 默认是仓库根目录下的 `state/chat-memory`；显式相对路径也从仓库根目录解析，绝对路径按原值使用。迁移或升级前须备份**旧源码、`config.json`、整个 `state/`、自定义角色及任何仓库外记忆目录**。控制台 JSON 备份只包含允许的章节，不含图片本体、本机凭据文件或 Codex 登录态，文本仍需自行检查敏感信息，不能作为完整回退镜像。`state/` 被 Git 忽略但属于本机敏感资料。参阅[升级与回退指南](UPGRADE_V040.md)与[接口说明](CONSOLE_API.md)。
 
 变更后先运行聚焦检查；发布回归入口是 `npm test`，Windows 部署脚本检查是 `npm run test:deployment`。这些检查不代替新机器、真实 QQ 和第三方版本的联调。贡献前参阅[贡献指南](../CONTRIBUTING.md)、[安全说明](../SECURITY.md)与[来源及许可说明](../THIRD_PARTY_NOTICES.md)。
+
+## v0.5.0 可选模块布局
+
+`integrations/waves` 保存发布Python适配器与上游派生补丁，按目录范围GPL-3.0声明。`scripts/windows/Install-Waves.ps1` 下载固定上游源码与作者资源；运行环境、素材与私人状态进入本部署 `state/waves/{core,venv,data,inputs,results,browsers}`，不捆绑进仓库。全局/会话游戏开关独立存于 `state/waves-settings.json`，默认关闭；端口与远程绑定使用 `config.waves`，远程启用默认false。
+
+游戏工具只在已启用会话的新原生线程声明；服务端注册工具不等于每个会话可调用。首次启用在空闲点迁移，载入最近100条有效消息及检索记忆，保留完整本地历史与旧绑定。未安装/未启用会话保持旧聊天流程。明确ww指令与普通模型聊天互斥处理；结果发送仍检查本人来源、会话、白名单、暂停、取消与归属。语音使用SnowLuma原生接口，不追加第二个识别模型。
+
+Python直接导入上游core/plugin，适配源码与补丁纳入 `integrations/waves` GPL-3.0。Node不导入/链接Python模块，不共享内存对象或游戏账号库，通过独立本机认证HTTP服务传递指令、输入和可展示结果；基础群聊不依赖该服务，Python服务可独立运行。分进程本身不构成GPL豁免，授权组合边界见[第三方说明](../THIRD_PARTY_NOTICES.md)。

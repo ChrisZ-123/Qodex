@@ -4,7 +4,7 @@
 
 用 Codex 驱动 QQ 群聊与私聊的本地桥接程序。Qodex 接收 [SnowLuma](https://github.com/SnowLuma/SnowLuma) 的 OneBot 消息，让模型结合各会话的历史和记忆，自己决定接话、保持安静、搜索网页或理解图片。管理员通过本机网页控制台管理访问范围和聊天风格。
 
-**English:** [README.en.md](README.en.md) · **版本：** `qodex-v0.4.0` 预览版 · **平台：** 目前只在 Windows 验证
+**English:** [README.en.md](README.en.md) · **版本：** `qodex-v0.5.0` 预览版 · **平台：** Windows；需自己的 QQ 与 Codex ChatGPT 登录
 
 本项目是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge) 的公开 fork，基于上游提交 [`dea3ce8`](https://github.com/Derpyu520/qq-bridge/commit/dea3ce8) 改造。它不是 SnowLuma、QQ 或 OpenAI 的官方产品。上游没有随该提交提供明确的 `LICENSE` 文件；请阅读[来源与许可说明](THIRD_PARTY_NOTICES.md)，不要把本仓库视为已获得通用开源再许可。
 
@@ -19,6 +19,9 @@ flowchart LR
 
 ## 能做什么
 
+- **群聊 / 鸣潮双分区：** 两区共用左侧会话选择，切换保留各区未保存的草稿；修改后仍须点击对应保存按钮。鸣潮整合是可选模块，公开默认关闭，远程自助绑定另行明确启用。原有聊天、记忆、生图、表情与备份功能保留。
+- **鸣潮原版功能与模型工具：** 启用后，明确 `ww` 指令独占游戏处理；自然语言由当前聊天模型从实际游戏目录选择工具，同轮使用原版结果回答。公开资料、本人账号功能及待授权项目分别标示，不把“未绑定”当成成功查询。自动签到和体力提醒默认关闭，开通及签到/解绑需本人确认。详见[鸣潮说明与支持矩阵](docs/WAVES.md)。
+- **QQ 语音转写（实验性）：** 公开默认关闭，按会话可继承、开启或关闭。开启时请求 SnowLuma 的 QQ 原生转写，保留来源和失败提示，不保存音频。历史证据确认收到了语音，但多条实际转写失败，原因尚未确定。不能保证稳定识别，详见[语音说明](docs/VOICE.md)。
 - **模型自主接话：** 允许的群消息和私聊交给同一轮 Codex 对话判断；它可以回复，也可以不发言。是否搜索网页由模型按问题决定，不能保证每条消息都有回复或都会联网。
 - **独立会话与设置：** 每个群和私聊分别保留模型上下文及历史。模型、推理强度、人格和聊天口吻可继承全局设置，也可按会话覆盖；还能为单个会话暂停、取消当前回复或重置上下文。全局速度及自动压缩阈值对所有会话生效。
 - **条目记忆与表达反馈：** 每个会话的长期记忆独立保存，总有效内容上限 30,000 字符；支持来源、修订、置顶、停用和旧版恢复。本轮按需检索相关条目，模型可在同轮逐条更新。机器人回复可标记“多余”“太长”或“合适”，并可撤销反馈。这些只是本地资料和表达提示，**不是模型训练**。
@@ -29,7 +32,11 @@ flowchart LR
 
 以下截图使用测试数据生成，仅作**界面示意**，不含真实 QQ 会话或账号。
 
-![Qodex v0.4.0 图片生成设置与历史示意](assets/qodex-image-v040.jpg)
+![Qodex v0.5.0 群聊分区示意](assets/qodex-chat-v050.png)
+
+![Qodex v0.5.0 鸣潮可选分区示意](assets/qodex-waves-v050.png)
+
+[实验性语音界面](assets/qodex-voice-v050.png) · [v0.4 生图界面](assets/qodex-image-v040.jpg)
 
 [控制台总览](assets/qodex-console-v030.png) · [条目记忆](assets/qodex-memory-v030.png) · [表情图库](assets/qodex-gallery-v030.png) · [备份恢复](assets/qodex-backup-v030.png) · [v0.4 转发与运行记录](assets/qodex-features-v040.jpg)
 
@@ -37,7 +44,7 @@ flowchart LR
 
 需要 Windows、[Git for Windows](https://git-scm.com/download/win)、Node.js 24 或更新、单独安装的 [Codex CLI](https://developers.openai.com/codex/cli) 和 [SnowLuma](https://github.com/SnowLuma/SnowLuma/releases/latest)。Codex 必须使用 **ChatGPT 账号**为这个部署单独完成官方登录；此版不支持只用 API key 鉴权。请自行阅读、接受各产品的条款并完成 QQ 登录；Qodex 不捆绑第三方可执行文件，也不会代你接受协议。
 
-首次预览版记录的本机环境为 Node 24.18.1、`codex-cli 0.155.0-alpha.16`、SnowLuma 1.14.17；这是历史记录，**不是 v0.4.0 的全版本兼容保证**。安装向导检查独立登录账号可用的模型和推理强度。建议 `gpt-6-luna` / `max`，默认标准速度；可选 `priority` 加速，**不保证固定倍率提速**，且可能影响共享的 Codex 使用额度。主动生图也会增加用量。模型不可用时会报错，不自动切换。
+首次预览版记录的本机环境为 Node 24.18.1、`codex-cli 0.155.0-alpha.16`、SnowLuma 1.14.17；这是历史记录，**不是 v0.5.0 的全版本兼容保证**。安装向导检查独立登录账号可用的模型和推理强度。建议 `gpt-6-luna` / `max`，默认标准速度；可选 `priority` 加速，**不保证固定倍率提速**，且可能影响共享的 Codex 使用额度。主动生图也会增加用量。模型不可用时会报错，不自动切换。
 
 ```powershell
 git clone https://github.com/ChrisZ-123/Qodex.git
@@ -53,7 +60,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1
 
 完成后双击 `Qodex.bat` 打开 Windows 启动面板，再点击“启动”和“打开控制台”。控制台与控制接口默认分别使用 `127.0.0.1:3100`、`127.0.0.1:3110`；访问令牌在本机生成。向导重跑时会先验证已有配置，不会默认覆盖。白名单为空时默认**不响应任何 QQ 消息**；请明确添加要接入的群或私聊。完整步骤见[部署指南](docs/DEPLOYMENT.md)，字段见[配置说明](docs/CONFIGURATION.md)。
 
+需要鸣潮时，另行安装 Python 3.11 x64，传入其解释器路径：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Install-Waves.ps1 -Python "C:\Python311\python.exe"
+# 仅明确需要远程自助绑定时，在上述命令追加 -RemoteLogin
+```
+
+安装器从官方/作者来源下载固定提交源码、运行依赖与作者资源；仓库不捆绑第三方二进制或游戏素材。运行目录为本部署 `state/waves`，安装完成后重启Qodex加载安全密钥，再在鸣潮分区显式开启游戏功能，远程登录仍单独控制。[gsuid_core](https://github.com/Genshin-bots/gsuid_core)、[XutheringWavesUID](https://github.com/Loping151/XutheringWavesUID)、[RoverSign](https://github.com/Loping151/RoverSign)、[RoverReminder](https://github.com/Loping151/RoverReminder)、[ScoreEcho](https://github.com/Loping151/ScoreEcho) 的固定提交和 GPL-3.0 许可见[第三方说明](THIRD_PARTY_NOTICES.md)。GPL 仅按其适用源码范围声明，不将继承仓库根目录重新许可。
+
 ## 日常运行
+
+从 v0.4.0 升级先停止并完整备份旧部署及外部记忆；按[v0.5.0 升级与回退指南](docs/UPGRADE_V050.md)操作。首次启用游戏工具在下个空闲点/新线程生效，新上下文载入最近 100 条有效消息及当轮检索记忆；完整本地历史、长期记忆和旧 Codex 绑定保留供回退，不声称复制旧原生隐藏压缩状态。未启用会话保持原绑定。
 
 在仓库根目录执行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Control.ps1 -Action Status` 可查看状态；`-Action Stop` 停止，`-Action Start` 启动，`-Action Verify` 检查运行中的连接状态。可用操作还包括 `OpenConsole`、`OpenSnowLuma`、`EnableAutoStart`、`DisableAutoStart`。`npm start`、`npm stop`、`npm run status` 和 `npm run setup` 分别调用同一套 Windows 控制与设置脚本，保留 DPAPI 令牌处理。合上电脑、睡眠或断网会使回复暂停；关闭浏览器中的控制台页面不会停止桥接进程。
 
@@ -65,6 +83,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1
 
 ## 文档与反馈
 
-[部署](docs/DEPLOYMENT.md) · [v0.4.0 升级与回退](docs/UPGRADE_V040.md) · [配置](docs/CONFIGURATION.md) · [控制台接口](docs/CONSOLE_API.md) · [故障排查](docs/TROUBLESHOOTING.md) · [项目结构](docs/PROJECT_GUIDE.md) · [更新记录](CHANGELOG.md) · [参与贡献](CONTRIBUTING.md) · [安全说明](SECURITY.md)
+[部署](docs/DEPLOYMENT.md) · [v0.5.0 升级与回退](docs/UPGRADE_V050.md) · [鸣潮](docs/WAVES.md) · [实验性语音](docs/VOICE.md) · [配置](docs/CONFIGURATION.md) · [控制台接口](docs/CONSOLE_API.md) · [故障排查](docs/TROUBLESHOOTING.md) · [项目结构](docs/PROJECT_GUIDE.md) · [更新记录](CHANGELOG.md) · [发布配方](docs/RELEASE_V050.md) · [安全说明](SECURITY.md)
 
 离线审计可运行 `npm test`。它不代替真实 QQ、全新 Windows 和第三方版本的端到端验证。提交问题时请移除 QQ 号、令牌、私人聊天内容和本机路径。

@@ -53,6 +53,11 @@ export class CodexApiClient {
     do{const page=await this.rpc.request('model/list',{...(cursor?{cursor}:{})});items.push(...page.data);cursor=page.nextCursor;}while(cursor);
     return items;
   }
+  installApplicationTools(tools,version){
+    if(this.config.conversationMode!=='model')throw Error('Application tools require model conversation mode');
+    for(const tool of tools){if(!tool.name||typeof tool.execute!=='function'||this.tools.has(tool.name))throw Error('Invalid or duplicate application tool');this.tools.set(tool.name,tool);}
+    this.toolGeneration=version;
+  }
   async listModels(){
     await this.ready;
     const items=await this.readModelCatalog();
@@ -66,7 +71,7 @@ export class CodexApiClient {
     if(typeof persona!=='string')throw new Error('Chat instructions missing');
     return toolNames(persona.replace(/You are a coding agent powered by the \{\{model\}\} model\./,'你是 QQ 对话机器人，使用 GPT 模型。'))+'\n只使用本次会话提供的 QQ 工具。不要创建子智能体、读取技能或资源、执行电脑操作。不可用的工具不能声称已经调用。角色设定由桥接消息提供。';
   }
-  async create({agentPreset,model=this.config.model,reasoningEffort=this.config.reasoningEffort}) {
+  async create({agentPreset,model=this.config.model,reasoningEffort=this.config.reasoningEffort,applicationTools=false}) {
     await this.ready;
     const available=await this.listModels();
     if(!available.some(m=>m.model===model&&m.efforts.includes(reasoningEffort)))throw new Error('Requested Codex model/effort is unavailable; no fallback permitted');
@@ -74,10 +79,10 @@ export class CodexApiClient {
       model,serviceTier:this.config.serviceTier,allowProviderModelFallback:false,config:this.config.autoCompactTokenLimit==null?{}:{model_auto_compact_token_limit:this.config.autoCompactTokenLimit},
       cwd:this.agentCwd(),environments:[],selectedCapabilityRoots:[],
       sandbox:'read-only',approvalPolicy:'never',baseInstructions:this.instructions(agentPreset),
-      dynamicTools:[...this.tools].map(([name,t])=>({type:'function',name,description:t.description??name,inputSchema:t.inputSchema})),
+      dynamicTools:[...this.tools].filter(([,t])=>!t.execute||applicationTools).map(([name,t])=>({type:'function',name,description:t.description??name,inputSchema:t.inputSchema})),
     });
     if(t.model!==model)throw new Error('Codex selected a different model');
-    this.records[t.thread.id]={preset:agentPreset,model,reasoningEffort,autoCompactTokenLimit:this.config.autoCompactTokenLimit??null};this.live.add(t.thread.id);this.save();return ok({sessionId:t.thread.id});
+    this.records[t.thread.id]={preset:agentPreset,model,reasoningEffort,toolGeneration:applicationTools?this.toolGeneration??null:null,autoCompactTokenLimit:this.config.autoCompactTokenLimit??null};this.live.add(t.thread.id);this.save();return ok({sessionId:t.thread.id});
   }
   async ensure(id,{autoCompactTokenLimit=this.config.autoCompactTokenLimit??null}={}){
     await this.ready;
@@ -166,11 +171,13 @@ export class CodexApiClient {
   }
   async toolCall(method,p){
     if(method!=='item/tool/call'||!this.records[p.threadId]||this.cancelled.has(p.threadId)||!this.active.has(p.threadId)||!this.tools.has(p.tool))throw new Error('Tool call rejected');
+    if(p.turnId&&((this.active.get(p.threadId)&&this.active.get(p.threadId)!==p.turnId)||(this.turnRequestIds?.has(p.turnId)&&this.turnRequestIds.get(p.turnId)!==this.pendingRequestIds?.get(p.threadId))))throw Error('Tool call rejected: obsolete turn');
     const tool=this.tools.get(p.tool);
-    this.emit(p.threadId,'tool/call',{callId:p.callId,name:tool.eventName??p.tool,arguments:p.arguments});
+    if(tool.execute&&this.records[p.threadId].toolGeneration!==this.toolGeneration)throw Error('Application tool is not enabled for this session');
+    this.emit(p.threadId,'tool/call',{callId:p.callId,name:tool.eventName??p.tool,arguments:tool.execute?{sourceMessageId:p.arguments?.sourceMessageId}:p.arguments});
     let result;
-    try{result=await tool.client.callTool({name:tool.name,arguments:p.arguments},undefined,{timeout:180000});}
-    catch{result={isError:true,content:[{type:'text',text:'QQ tool call failed'}]};}
+    try{result=tool.execute?await tool.execute({threadId:p.threadId,requestId:this.pendingRequestIds?.get(p.threadId),arguments:p.arguments}):await tool.client.callTool({name:tool.name,arguments:p.arguments},undefined,{timeout:180000});}
+    catch{result={isError:true,content:[{type:'text',text:tool.execute?'鸣潮工具请求失败，请查看本机运行记录；未自动重试。':'QQ tool call failed'}]};}
     this.emit(p.threadId,'tool/result',{message:{source:{callId:p.callId},isError:result.isError===true,content:result.content}});
     return{success:result.isError!==true,contentItems:result.content.filter(b=>b.type==='text'||b.type==='image').map(b=>b.type==='text'?{type:'inputText',text:toolNames(b.text)}:{type:'inputImage',imageUrl:`data:${b.mimeType};base64,${b.data}`})};
   }

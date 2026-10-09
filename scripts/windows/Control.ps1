@@ -94,11 +94,12 @@ try {
             exit 0
         }
         if (Test-QodexPortOpen $consolePort) { throw '控制台端口已被其他服务占用；未启动桥接。' }
-        $previous = @{onebot=$env:QBOT_ONEBOT_TOKEN;console=$env:QBOT_CONSOLE_TOKEN;control=$env:QBOT_CONTROL_TOKEN;codex=$env:QBOT_CODEX_EXE}
+        $previous = @{onebot=$env:QBOT_ONEBOT_TOKEN;console=$env:QBOT_CONSOLE_TOKEN;control=$env:QBOT_CONTROL_TOKEN;codex=$env:QBOT_CODEX_EXE;waves=$env:QBOT_WAVES_TOKEN}
         $env:QBOT_ONEBOT_TOKEN = [string]$secrets.onebot
         $env:QBOT_CONSOLE_TOKEN = [string]$secrets.console
         $env:QBOT_CONTROL_TOKEN = [string]$secrets.control
         $env:QBOT_CODEX_EXE = $exe
+        $env:QBOT_WAVES_TOKEN = [string]$secrets.waves
         try {
             $info = New-Object Diagnostics.ProcessStartInfo
             $info.FileName = $node
@@ -113,6 +114,7 @@ try {
             $env:QBOT_CONSOLE_TOKEN = $previous.console
             $env:QBOT_CONTROL_TOKEN = $previous.control
             $env:QBOT_CODEX_EXE = $previous.codex
+            $env:QBOT_WAVES_TOKEN = $previous.waves
         }
         try {
             for ($i = 0; $i -lt 300; $i++) {

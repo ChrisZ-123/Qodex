@@ -44,5 +44,11 @@
   "slang": {
     "autoResearch": false,
     "enabled": false
+  },
+  "waves": {
+    "rpcPort": 8788,
+    "loginPort": 8789,
+    "tunnelMetricsPort": 8790,
+    "remoteLoginEnabled": false
   }
 }

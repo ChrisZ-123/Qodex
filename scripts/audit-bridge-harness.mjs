@@ -24,7 +24,7 @@ import { ChatMemory } from '../src/chat-memory.js';
 import { ModelPreferences } from '../src/model-preferences.js';
 import { ModelBackup } from '../src/model-backup.js';
 import { loadGeneratedImage } from '../src/generated-images.js';
-import {WavesClient,WavesSettings,WavesController,loadWavesAsset,safeGameText} from '../src/waves-client.js';
+import {WavesClient,WavesSettings,WavesController,loadWavesAsset,safeGameText,redactWavesLoginLinks} from '../src/waves-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 export async function bridgeHarness({ config = {}, savedState, globals = {} } = {}) {
@@ -90,7 +90,7 @@ export async function bridgeHarness({ config = {}, savedState, globals = {} } = 
     NodeApiClient: class { constructor() { return api; } },
     CodexApiClient: class { constructor() { return api; } }, ModelChat, DEFAULT_CHAT_STYLE, StickerCollector, ModelPreferences, ModelBackup,WavesClient,WavesSettings,WavesController,loadWavesAsset,safeGameText,
     ChatMemory,loadGeneratedImage,
-    SnowLumaWebSocketClient: FakeBot, text: (s) => s,
+    SnowLumaWebSocketClient: FakeBot, text: (s) => s,redactWavesLoginLinks,
     discoverDshLaunchToken: () => '', unwrap, createTurnCollector,
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, expandModelForwards, transcribeModelVoices, ...slang, ...sticker, ...stickerLearning,
     ...globals,

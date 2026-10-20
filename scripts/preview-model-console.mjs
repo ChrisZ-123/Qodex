@@ -1,45 +1,43 @@
-// Local UI fixture. No real QQ transport, credentials, or model calls.
+// Isolated public UI fixture: fictional data, no QQ/Codex/player account calls.
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import {bridgeHarness} from './audit-bridge-harness.mjs';
-const demoImage=fs.readFileSync(new URL('../assets/qodex-demo-art-v040.png',import.meta.url));
-const h=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max',serviceTier:null},allow:{groups:['10001','10002'],private:['90001']},ownerQQ:90001},globals:{safeFetchBuffer:async()=>({buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=','base64')}),loadWavesAsset:()=>({bytes:demoImage,mimeType:'image/png'}),loadGeneratedImage:(key)=>{if(key!=='group:10001')throw new Error('No image for conversation');return {bytes:demoImage,mimeType:'image/png'};}}});
-fs.mkdirSync(path.join(h.temp,'public'));fs.copyFileSync(new URL('../public/model-console.html',import.meta.url),path.join(h.temp,'public/model-console.html'));
-fs.copyFileSync(new URL('../public/model-controls.js',import.meta.url),path.join(h.temp,'public/model-controls.js'));
-fs.copyFileSync(new URL('../public/model-waves.js',import.meta.url),path.join(h.temp,'public/model-waves.js'));
-for(const file of ['model-console.html','model-controls.js','model-waves.js'])fs.watchFile(new URL('../public/'+file,import.meta.url),{interval:500,persistent:false},()=>fs.copyFileSync(new URL('../public/'+file,import.meta.url),path.join(h.temp,'public',file)));
-fs.mkdirSync(path.join(h.temp,'roles'));fs.writeFileSync(path.join(h.temp,'roles','示例向导.md'),'回答清楚、简洁，必要时提供可核对的来源。');
-fs.writeFileSync(path.join(h.temp,'state','current-role.json'),JSON.stringify({role:'示例向导',mode:'active'}));
-h.modelChat.append('group:10001',{kind:'user',sender:'小林',text:'可以查一下 Python 官网的最新版本吗？'});
-h.modelChat.append('group:10001',{kind:'event',text:'正在联网搜索'});
-h.modelChat.append('group:10001',{kind:'assistant',sender:'Qodex',text:'可以。查证后我会附上官网链接，方便你核对。'});
-const imageId=crypto.randomUUID(),runId=crypto.randomUUID();
-h.modelChat.entry('group:10001').images=[{imageId,runId,mimeType:'image/png',extension:'png',bytes:demoImage.length,createdAt:new Date().toISOString(),status:'sent',sentMessageId:'72'}];
-h.modelChat.append('group:10001',{kind:'user',sender:'小林',text:'请画一只蓝色小鲸鱼在海里游。',messageId:'71'});
-h.modelChat.append('group:10001',{kind:'assistant',sender:'Qodex',text:'[生成图片]',imageId,messageId:'72'});
-h.modelChat.append('group:10002',{kind:'user',sender:'小周',text:'这个群希望回答简洁一些。'});
-h.modelChat.append('group:10002',{kind:'user',sender:'小周',text:'看看这份合并转发，大家在讨论什么？',messageId:'81',forward:[{id:'fixture-forward',source:'message',sourceMessageId:'81',outerMessageId:'81',depth:1,parent:null,status:'truncated',note:'演示：部分内容超过读取范围',nodes:[{index:1,sender:'演示成员甲',time:1790000000,messageId:null,text:'周末一起准备社区海报。',images:[],mediaTypes:[]},{index:2,sender:'演示成员乙',time:1790000001,messageId:null,text:'我可以负责配图。',images:[],mediaTypes:[]}]}]});
-const runEntry=h.modelChat.entry('group:10002');runEntry.runs=[{id:crypto.randomUUID(),status:'sent',result:'sent',startedAt:new Date().toISOString(),finishedAt:new Date().toISOString(),inputPreview:'看看这份合并转发',model:'gpt-6-luna',reasoningEffort:'max',totalMs:2800,queueMs:20,forwardMs:600,forwardCount:1,forwardNodeCount:2,forwardStatus:'partial',modelMs:1900,sendMs:280,searchCount:0,searchMs:0,memory:[]}];h.modelChat.save(runEntry);
-h.modelChat.append('private:90001',{kind:'user',sender:'管理员（演示）',text:'查看本机运行状态。'});
-h.modelChat.append('group:10002',{kind:'user',sender:'小周（虚构）',text:'[语音]',messageId:'82',voice:[{source:'message',sourceMessageId:'82',outerMessageId:'82',sender:'小周（虚构）',time:new Date().toISOString(),status:'failed',text:'',note:'模拟服务未提供转写文字；未猜测内容，未自动重试。'}]});
-h.modelChat.append('group:10002',{kind:'assistant',sender:'Qodex',text:'这条语音暂时没有转写文字，请先发文字。'});
-// Fictional module state, never a player binding or a real RPC request.
-h.wavesSettings.data.enabled=true;
-fs.mkdirSync(path.join(h.temp,'state/waves'),{recursive:true});fs.writeFileSync(path.join(h.temp,'state/waves/installation.json'),JSON.stringify({complete:true}));
-h.wavesClient.call=async(route)=>{
- if(route==='/v1/status')return {ready:true,publicLoginReady:false,capabilities:[{label:'公开攻略与帮助',status:'ready'},{label:'本人角色面板',status:'ready',reason:'需本人绑定，此处仅为虚构演示'},{label:'声骸截图评分',status:'pending',reason:'需额外授权'},{label:'公告自动推送',status:'unavailable',reason:'尚未上线'}]};
- if(route==='/v1/accounts')return {accounts:[{senderQQ:'90002',uid:'100000001',nickname:'演示玩家（虚构）',hasCredential:false}]};
- if(route==='/v1/subscriptions')return {subscriptions:[{key:'group:10001',senderQQ:'90002',signEnabled:false,reminderEnabled:false,threshold:180}]};
+const group='group:20001',sender='30001';
+const h=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max',serviceTier:'default'},allow:{groups:['20001','20002'],private:['10001']},ownerQQ:'10001'}});
+fs.mkdirSync(path.join(h.temp,'public'),{recursive:true});
+for(const file of ['model-console.html','model-controls.js','model-waves.js']){
+ const from=new URL('../public/'+file,import.meta.url),to=path.join(h.temp,'public',file);
+ fs.copyFileSync(from,to);fs.watchFile(from,{interval:500,persistent:false},()=>fs.copyFileSync(from,to));
+}
+fs.mkdirSync(path.join(h.temp,'roles'),{recursive:true});
+fs.copyFileSync(new URL('../roles/自然群友.md',import.meta.url),path.join(h.temp,'roles','自然群友.md'));
+fs.writeFileSync(path.join(h.temp,'state','current-role.json'),JSON.stringify({role:'自然群友'}));
+fs.writeFileSync(path.join(h.temp,'state','chat-expression.json'),JSON.stringify({replyMode:'natural',imageMode:'requested',stickerStyle:'natural',voiceEnabled:false}));
+fs.mkdirSync(h.waves.root,{recursive:true});fs.writeFileSync(path.join(h.waves.root,'installation.json'),JSON.stringify({version:1,complete:true}));
+h.wavesSettings.update({enabled:true,revision:h.wavesSettings.data.revision});
+let authorization={revision:0,shared:false,rank:{configured:true,state:'configured_unverified'},score:{configured:false,state:'unconfigured'}};
+let subscription={senderQQ:sender,key:group,signEnabled:false,reminderEnabled:false,threshold:180};
+h.wavesClient.call=async(route,body)=>{
+ if(route==='/v1/authorization'){
+  if(body){if(body.revision!==authorization.revision)throw Object.assign(Error('授权修订号已变化'),{statusCode:409});authorization={revision:authorization.revision+1,shared:body.shared,rank:{configured:true,state:'configured_unverified'},score:{configured:Boolean(body.shared||body.xwtoken),state:body.shared||body.xwtoken?'configured_unverified':'unconfigured'}};}
+  return structuredClone(authorization);
+ }
+ if(route==='/v1/status')return {ready:true,publicLoginReady:true,authorization,capabilities:[{id:'help',label:'帮助、资料与攻略',status:'ready'},{id:'panel',label:'本人角色面板与练度',status:'ready'},{id:'rank',label:'总排行上传',status:'pending',reason:'示例：授权已保存，待实际请求验证'},{id:'score',label:'声骸截图评分',status:'pending',reason:'示例：需作者额外授权'}]};
+ if(route==='/v1/accounts')return {accounts:[{senderQQ:sender,uid:'100000001',nickname:'虚构漂泊者',hasCredential:true}]};
+ if(route==='/v1/subscriptions'){if(body)subscription={...subscription,...body};return {subscriptions:[subscription]};}
+ if(route==='/v1/notices')return {notices:[]};
  return {};
 };
-const gameId=crypto.randomUUID();h.waves.runs=[{id:gameId,key:'group:10001',senderQQ:'90002',command:'ww帮助（虚构演示）',status:'completed',at:new Date().toISOString(),elapsedMs:1240}];
-h.modelChat.append('group:10001',{kind:'user',sender:'演示玩家（虚构）',text:'ww帮助',wavesCommand:'ww帮助',runId:gameId});
-h.modelChat.append('group:10001',{kind:'assistant',sender:'Qodex',text:'演示：公开查询可直接使用；本人数据需独立绑定，自动任务需本人确认。',source:'waves',runId:gameId});
-h.modelChat.memory.mutate('group:10001',{action:'add',text:'群友喜欢先给结论，再附可核对的来源链接。',pinned:true,revision:0});
-h.modelChat.memory.mutate('group:10001',{action:'add',text:'讨论代码问题时，优先提供一个可运行的小例子。',revision:1});
-h.chatPreferences.updateConversation('group:10002',{style:'简洁自然，避免重复。',role:false},h.chatPreferences.data.revision,{roles:['示例向导'],models:await h.api.listModels()});
-const sample=h.chatBackup.export();sample.sections.memory['group:10001'].entries=[];
-fs.mkdirSync(new URL('../test-output/',import.meta.url),{recursive:true});fs.writeFileSync(new URL('../test-output/qa-backup.json',import.meta.url),JSON.stringify(sample,null,2));
-const server=h.startConsoleServer();if(!server.listening)await new Promise(r=>server.once('listening',r));console.log(JSON.stringify({port:server.address().port,fixture:true}));
-process.on('SIGINT',async()=>{server.closeAllConnections();server.close();await h.close();process.exit(0)});
+const stamp=new Date().toISOString(),runId='11111111-1111-4111-8111-111111111111';
+h.waves.runs=[{id:'33333333-3333-4333-8333-333333333333',key:group,senderQQ:sender,command:'ww帮助',at:stamp,status:'completed',elapsedMs:850},{id:'44444444-4444-4444-8444-444444444444',key:group,senderQQ:sender,command:'ww登录',at:stamp,status:'confirmation'}];
+h.modelChat.append(group,{kind:'user',sender:'示例群友甲',senderQQ:sender,text:'昨天说的番茄面，今天真的做出来了。',messageId:'9001'});
+for(const [index,text] of ['这次番茄面计划终于从聊天记录进厨房了。','[示例收藏表情：庆祝]','味道怎么样？'].entries())h.modelChat.append(group,{kind:'assistant',sender:'Qodex',text,messageId:String(9002+index),runId,actionIndex:index,actionType:index===1?'sticker':'text'});
+h.modelChat.append(group,{kind:'event',text:'虚构演示数据：没有向 QQ 发送任何消息。'});
+h.modelChat.append('group:20002',{kind:'user',sender:'示例群友乙',senderQQ:'30002',text:'这个会话有独立的历史与记忆。',messageId:'9010'});
+h.modelChat.memory.mutate(group,{action:'add',text:'示例群友甲喜欢在周末尝试简单菜谱。',kind:'person',participantQQs:[sender],pinned:true,revision:0});
+h.modelChat.memory.mutate(group,{action:'add',text:'昨天讨论过的番茄面今天已完成，之后可聊实际口味。',kind:'topic',participantQQs:[sender],topicState:'closed',revision:1});
+const memory=h.modelChat.memory.read(group).entries,entry=h.modelChat.entry(group);
+entry.runs=[{id:runId,status:'sent',result:'sent',startedAt:stamp,finishedAt:stamp,inputPreview:'番茄面做出来了',model:'gpt-6-luna',reasoningEffort:'max',totalMs:1300,queueMs:10,modelMs:1000,sendMs:290,memory,actions:[{index:0,type:'text',status:'sent',messageIds:['9002']},{index:1,type:'sticker',status:'sent',messageIds:['9003']},{index:2,type:'text',status:'sent',messageIds:['9004']}]},{id:'22222222-2222-4222-8222-222222222222',status:'failed',result:'failed',startedAt:stamp,finishedAt:stamp,inputPreview:'隔离测试：部分发送失败',model:'gpt-6-luna',reasoningEffort:'max',totalMs:1200,queueMs:0,modelMs:900,sendMs:300,memory:[],actions:[{index:0,type:'text',status:'sent',messageIds:['9020']},{index:1,type:'sticker',status:'failed',messageIds:[],error:'人为模拟的发送失败'},{index:2,type:'text',status:'not_sent',messageIds:[]}]}];h.modelChat.save(entry);
+const server=h.startConsoleServer();if(!server.listening)await new Promise(resolve=>server.once('listening',resolve));
+console.log(JSON.stringify({port:server.address().port,fixture:true}));
+process.on('SIGINT',async()=>{for(const file of ['model-console.html','model-controls.js','model-waves.js'])fs.unwatchFile(new URL('../public/'+file,import.meta.url));server.closeAllConnections();server.close();await h.close();process.exit(0);});

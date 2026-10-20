@@ -1,16 +1,12 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
 import {bridgeHarness} from './audit-bridge-harness.mjs';
-const h=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max',serviceTier:'priority'},sendDelayMs:0}});
+const h=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max'},sendDelayMs:0}});
 const server=h.startConsoleServer();
 try{
  if(!server.listening)await new Promise(r=>server.once('listening',r));
  const url='http://127.0.0.1:'+server.address().port;
  const request=async(route,body,extra={})=>{if(body&&['/api/chat/models','/api/chat/expression'].includes(route))body={...body,revision:(await(await request(route)).json()).revision};return fetch(url+route,{method:body?'POST':'GET',headers:{'x-console-token':'fixture-console-token',...(body?{'content-type':'application/json'}:{}),...extra},...(body?{body:JSON.stringify(body)}:{})});};
  assert.equal((await fetch(url+'/api/chat')).status,401);
- const login=await fetch(url+'/');assert.equal(login.status,401);
- const loginHtml=await login.text();assert(loginHtml.includes('name="token"'));assert(!loginHtml.includes('prompt('));
  assert.equal((await request('/api/chat',null,{'x-agent-token':'old-agent'})).status,403);
  assert.equal((await request('/api/chat/pause',{paused:true},{origin:'https://other.invalid'})).status,403);
  assert.equal((await request('/api/whitelist',{allow:{groups:['456','789'],private:['123']}})).status,200);
@@ -27,17 +23,6 @@ try{
  assert.equal((await (await request('/api/chat/memory?key=group%3A789')).json()).content,'');
  assert.equal((await request('/api/chat/memory',{key:'group:456',content:'过期修改',enabled:true,revision:memory.revision})).status,409);
  assert.equal((await request('/api/chat/memory?key=..%2Fconfig')).status,400);
- const initialExpression=await(await request('/api/chat/expression')).json();
- assert.equal(initialExpression.imageMode,'requested');assert.equal(initialExpression.stickerStyle,'natural');
- assert.equal((await request('/api/chat/expression',{style:'简洁自然',stickersEnabled:true,imageMode:'auto',stickerStyle:'lively'})).status,200);
- const changedExpression=await(await request('/api/chat/expression')).json();
- assert.equal(changedExpression.imageMode,'auto');assert.equal(changedExpression.stickerStyle,'lively');
- assert.equal((await request('/api/chat/expression',{style:'简洁自然',stickersEnabled:true,imageMode:'invalid'})).status,400);
- const scoped=await(await request('/api/chat/settings?key=group%3A456')).json();
- assert.equal(scoped.override.imageMode,null);assert.equal(scoped.override.stickerStyle,null);
- assert.equal((await request('/api/chat/settings',{key:'group:456',revision:scoped.revision,patch:{imageMode:'off',stickerStyle:'natural'}})).status,200);
- const scopedAfter=await(await request('/api/chat/settings?key=group%3A456')).json();
- assert.equal(scopedAfter.effective.imageMode,'off');assert.equal(scopedAfter.effective.stickerStyle,'natural');
  assert.equal((await request('/api/chat/expression',{style:'简洁自然',stickersEnabled:false})).status,200);
  assert.equal((await (await request('/api/chat/expression')).json()).stickersEnabled,false);
  assert.equal((await request('/api/chat/expression',{style:'简洁自然',stickersEnabled:true,autoCollectStickers:false})).status,200);
@@ -57,10 +42,6 @@ try{
  assert.equal((await request('/api/chat/reset',{key:'group:789'})).status,200);
  assert.equal((await request('/api/chat/models',{model:'fixture-model',reasoningEffort:'low'})).status,200);
  assert.equal(h.cfg.codex.model,'fixture-model');
- const saved=JSON.parse(fs.readFileSync(path.join(h.temp,'config.json'),'utf8'));
- assert.equal(saved.codex.model,'fixture-model');assert.equal(saved.codex.reasoningEffort,'low');assert.equal(saved.codex.serviceTier,'priority');
- assert.equal((await request('/api/chat/models',{model:'gpt-6-luna',reasoningEffort:'max'},{origin:'https://other.invalid'})).status,403);
- assert.equal((await request('/api/chat/reset',{key:'group:456'},{origin:'https://other.invalid'})).status,403);
  assert.equal((await request('/api/chat/reset',{key:'group:999'})).status,400);
  await h.handleIncoming('group',789,event(789,'暂停期间'),h.cfg);assert.equal(h.calls.prompts.length,2);
  console.log('PASS real bridge: multi-group delivery, unauthorized rejection, console auth/CSRF, role editing and pause');

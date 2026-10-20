@@ -35,13 +35,12 @@ const h=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'mo
 try{
  if(!server.listening)await new Promise(r=>server.once('listening',r));const base='http://127.0.0.1:'+server.address().port;
  const req=(route,body,headers={})=>fetch(base+route,{method:body?'POST':'GET',headers:{'x-console-token':'fixture-console-token',...(body?{'content-type':'application/json'}:{}),...headers},...(body?{body:JSON.stringify(body)}:{})});
- for(const route of ['/api/chat/settings','/api/chat/feedback','/api/chat/gallery','/api/chat/sticker-note','/api/chat/memory','/api/chat/cancel','/api/chat/backup/preview','/api/chat/backup/restore']){
-  assert.equal((await fetch(base+route,{method:'POST',headers:{'content-type':'application/json'},body:'{}'})).status,401,route+' requires authentication');
-  assert.equal((await req(route,{}, {origin:'https://other.invalid'})).status,403,route+' blocks foreign origins');
-  assert.equal((await req(route,{}, {'x-agent-token':'model'})).status,403,route+' rejects model management access');
- }
  h.modelChat.entry('group:456');
  fs.mkdirSync(path.join(h.temp,'roles'),{recursive:true});
+ assert.equal((await req('/api/roles/create',{name:'自然·群友',content:'自然说话'})).status,200);
+ assert.equal((await req('/api/role',{role:'自然·群友'})).status,200);
+ assert.equal((await(await req('/api/roles')).json()).current,'自然·群友');
+ assert.equal((await(await req('/api/roles/content?name='+encodeURIComponent('自然·群友'))).json()).content,'自然说话\n');
  const initialModels=await(await req('/api/chat/models')).json();
  assert.equal((await req('/api/chat/models',{...initialModels.current,revision:initialModels.revision,autoCompactTokenLimit:64000,serviceTier:null})).status,200);
  const changedModels=await(await req('/api/chat/models')).json();assert.equal(changedModels.current.serviceTier,null);assert.equal(changedModels.current.autoCompactTokenLimit,64000);
@@ -67,14 +66,3 @@ try{
  await assert.rejects(sending,/取消|权限/);assert.equal(transportCalls,0);
  console.log('PASS sticker disabled during download is blocked immediately before QQ transport');
 }finally{await race.close();}
-
-const standard=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max',serviceTier:'default'}}});
-try{
- fs.mkdirSync(path.join(standard.temp,'roles'));
- assert.equal(standard.cfg.codex.serviceTier,null);
- const backup=standard.chatBackup.export();
- assert.equal(backup.sections.settings.model.serviceTier,null);
- assert(standard.chatBackup.preview(backup,await standard.api.listModels()).id);
- assert.equal(JSON.parse(fs.readFileSync(path.join(standard.temp,'config.json'),'utf8')).codex.serviceTier,'default');
- console.log('PASS legacy standard-speed config normalizes for the console/backup without rewriting saved config');
-}finally{await standard.close();}

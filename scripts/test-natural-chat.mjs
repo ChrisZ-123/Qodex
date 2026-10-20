@@ -1,0 +1,48 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {ModelChat} from '../src/model-chat.js';
+import {ChatMemory} from '../src/chat-memory.js';
+const temp=fs.mkdtempSync(path.join(os.tmpdir(),'qq-natural-chat-'));
+const text=t=>({type:'text',text:t,resourceId:null}),sticker=id=>({type:'sticker',text:null,resourceId:id});
+const output=(replyActions,extra={})=>({protocolVersion:2,replyActions,memoryOps:[],stickerNotes:[],replyTo:null,imagePrompt:'',imageSourceMessageId:null,...extra});
+try{
+ const prompts=[],sent=[];let sequence=0,id=0,enabled=true,failText=null,afterSend=null;
+ const allowed=new Set(['group:101','group:202']);
+ const settings={replyMode:'natural',imageMode:'auto'};
+ const api={sessions:{create:async()=>({result:{ok:true,value:{sessionId:'s'+(++sequence)}}}),prompt:async p=>{prompts.push(p);return {result:{ok:true}};}},stopSessionWork:async()=>{}};
+ const memory=new ChatMemory(path.join(temp,'memory'));
+ memory.mutate('group:101',{action:'add',text:'甲喜欢番茄面',kind:'person',participantQQs:['111'],revision:0});
+ const chat=new ModelChat({dir:path.join(temp,'chat'),api,memory,allowed:k=>allowed.has(k),settings:()=>settings,persona:()=>({name:'自然群友'}),expression:()=>({stickers:[{id:'laugh',description:'笑'},{id:'yes',description:'赞同'}]}),send:async(k,t,guard,o)=>{assert(guard());if(t===failText)throw Error('transport failure');const mid=String(++id);sent.push({key:k,type:'text',text:t,replyTo:o.replyTo});o.onSent(t,mid);await afterSend?.(t);},sendSticker:async(k,s,guard,o)=>{assert(guard());if(!enabled)throw Error('sticker disabled before sending');sent.push({key:k,type:'sticker',id:s,replyTo:o.replyTo});return {messageId:String(++id)};}});
+ const receive=(key,messageId,qq='111',name='甲',body='正常聊天')=>chat.receive(key,{messageId,senderQQ:qq,sender:name,text:body,time:new Date().toISOString()});
+ const finish=async(key,value)=>{const run=chat.running.get(key);run.text=JSON.stringify(value);await chat.consume(run.sessionId,{type:'turn/end',data:{requestId:run.id,reason:{kind:'completed'}}});return run;};
+ await receive('group:101','-10');
+ assert.equal(prompts[0].context.timeZone,'Asia/Shanghai');assert(!Number.isNaN(Date.parse(prompts[0].context.now)));
+ assert.equal(prompts[0].context.participants[0].qq,'111');assert.equal(prompts[0].context.expression.replyMode,'natural');assert.equal(prompts[0].context.longTermMemory.entries[0].kind,'person');
+ let run=await finish('group:101',output([text('啊？'),sticker('laugh'),text('你还挺能吹')],{replyTo:'-10'}));
+ assert.deepEqual(sent.map(x=>x.type),['text','sticker','text']);assert.deepEqual(sent.map(x=>x.replyTo),['-10',null,null]);
+ assert.deepEqual(run.record.actions.map(x=>x.status),['sent','sent','sent']);assert.deepEqual(chat.entry('group:101').messages.filter(x=>x.kind==='assistant').map(x=>x.actionIndex),[0,1,2]);
+ await receive('group:101','-11','111','改名后的甲');
+ assert(prompts.at(-1).context.participants[0].lastSpokeAt);assert(prompts.at(-1).context.recentSourceMessages.some(x=>x.kind==='assistant'&&x.confirmed===true));
+ assert(prompts.at(-1).context.recentSourceMessages.every(x=>x.key==='group:101'));
+ await finish('group:101',output([]));
+ await receive('group:101','-12','222','改名后的甲');assert.equal(prompts.at(-1).context.participants[0].lastSpokeAt,null);await finish('group:101',output([]));
+ const count=sent.length;
+ await receive('group:101','-13');run=await finish('group:101',output([text('不能先发'),sticker('foreign')]));assert.equal(sent.length,count);assert.equal(run.record.result,'failed');assert.match(run.record.error.detail,/表情/);
+ await receive('group:101','-14');run=await finish('group:101',{reply:'旧格式',memoryOps:[]});assert.equal(sent.length,count);assert.equal(run.record.result,'failed');
+ failText='失败';await receive('group:101','-15');run=await finish('group:101',output([text('先发'),text('失败'),text('不应发送')]));
+ assert.deepEqual(run.record.actions.map(x=>x.status),['sent','failed','not_sent']);assert.equal(run.record.actions[0].messageIds.length,1);assert.equal(sent.at(-1).text,'先发');
+ failText=null;afterSend=async()=>{enabled=false;};await receive('group:101','-16');run=await finish('group:101',output([text('改变禁用'),sticker('laugh'),text('剩余不发')]));assert.deepEqual(run.record.actions.map(x=>x.status),['sent','failed','not_sent']);
+ enabled=true;afterSend=async()=>{await chat.cancel('group:101');};await receive('group:101','-17');run=await finish('group:101',output([text('已送达'),text('取消剩余')]));assert.equal(run.record.result,'cancelled');assert.equal(sent.at(-1).text,'已送达');assert.notEqual(run.record.actions[1].status,'sent');
+ afterSend=null;settings.replyMode='single';await receive('group:101','-18');run=await finish('group:101',output([text('一'),text('二')]));assert.equal(run.record.result,'failed');
+ settings.replyMode='natural';await receive('group:101','-19');await receive('group:202','-20','333','乙');await finish('group:202',output([text('第二群')]));await finish('group:101',output([text('第一群')]));assert.equal(sent.at(-2).key,'group:202');assert.equal(sent.at(-1).key,'group:101');
+ let release,held=false;afterSend=async()=>{if(!held){held=true;await new Promise(resolve=>release=resolve);}};
+ await receive('group:101','-23');const completingRun=chat.running.get('group:101'),beforeDuplicate=sent.length;
+ const completing=finish('group:101',output([text('不能重复发'),text('第二条')]));await new Promise(setImmediate);
+ await chat.consume(completingRun.sessionId,{type:'turn/end',data:{requestId:completingRun.id,reason:{kind:'completed'}}});assert.equal(sent.length,beforeDuplicate+1);release();await completing;assert.equal(sent.length,beforeDuplicate+2);afterSend=null;
+ await receive('group:101','-21');await receive('group:101','-22');await chat.cancel('group:101');run=await finish('group:101',output([text('取消旧回复')]));await new Promise(setImmediate);assert.equal(JSON.parse(prompts.at(-1).content[0].text).messages[0].messageId,'-22');await finish('group:101',output([]));
+ console.log('PASS actual ModelChat ordered composition/quote/history, stable participants/time/confirmed evidence, strict invalid plan rejection, partial delivery, mid-send disable/cancel, single-mode, queued messages and two-group isolation');
+}finally{
+ if(!path.resolve(temp).startsWith(path.resolve(os.tmpdir())+path.sep+'qq-natural-chat-'))throw Error('Invalid isolated cleanup target');fs.rmSync(temp,{recursive:true,force:true});
+}

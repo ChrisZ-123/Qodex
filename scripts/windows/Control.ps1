@@ -1,4 +1,4 @@
-﻿param([ValidateSet('Start','Stop','Status','Verify','OpenConsole','OpenSnowLuma','EnableAutoStart','DisableAutoStart')][string]$Action='Status')
+﻿param([ValidateSet('Start','Stop','Status','Verify','RepairCodex','OpenConsole','OpenSnowLuma','EnableAutoStart','DisableAutoStart')][string]$Action='Status')
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Common.ps1')
 $root = Get-QodexRoot
@@ -133,6 +133,13 @@ try {
             try { $null = Invoke-RestMethod -Uri "http://127.0.0.1:$controlPort/stop" -Method Post -Headers @{Authorization="Bearer $($secrets.control)"} -TimeoutSec 5 } catch {}
             throw 'Qodex 模型在 30 秒内未就绪，已请求停止；请检查 Codex 登录、模型权限和 logs/windows-supervisor.log。'
         } finally { $process.Dispose() }
+    }
+    if ($Action -eq 'RepairCodex') {
+        if (-not (Test-QodexPortOpen $controlPort)) { throw '请先启动 Qodex，再修复 Codex 连接。' }
+        $proxyUrl = Get-QodexSystemProxy
+        $result = Invoke-RestMethod -Uri "http://127.0.0.1:$controlPort/repair-model" -Method Post -Headers @{Authorization="Bearer $($secrets.control)"} -ContentType 'application/json' -Body (@{proxyUrl=$proxyUrl} | ConvertTo-Json -Compress) -TimeoutSec 60
+        Write-Output ($result | ConvertTo-Json -Compress -Depth 8)
+        exit 0
     }
     if (-not (Test-QodexPortOpen $controlPort)) {
         Write-Output '{"running":false}'

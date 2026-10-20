@@ -11,8 +11,11 @@ const tests = [
   'test-md-to-plain.mjs', 'test-slang-learn.mjs', 'test-mux-reconnect.mjs',
   'test-restart-busy.mjs',
   'test-codex-client.mjs',
+  'test-codex-startup-recovery.mjs',
+  'test-context-exhaustion.mjs',
   'test-model-chat.mjs', 'test-model-forward.mjs', 'test-model-forward-bridge.mjs', 'test-model-voice.mjs', 'test-model-voice-bridge.mjs',
   'test-model-console.mjs',
+  'test-console-model-loading.mjs',
   'test-chat-memory.mjs',
   'test-model-expression.mjs',
   'test-model-image.mjs',
@@ -23,9 +26,14 @@ const tests = [
   'test-model-features.mjs',
   'test-model-backup.mjs',
   'test-waves.mjs',
+  'test-waves-direct-actions.mjs',
   'test-waves-boundaries.mjs',
+  'test-waves-group-login.mjs',
+  'test-waves-authorization.mjs',
   'test-waves-ui-drafts.mjs',
   'test-waves-supervisor.mjs',
+  'test-model-repair.mjs',
+  'test-reply-actions.mjs', 'test-natural-chat.mjs', 'test-social-memory.mjs', 'test-natural-console.mjs',
 ];
 let failed = 0;
 for (const test of tests) {

@@ -186,3 +186,14 @@ function Test-QodexPortOpen([int]$Port) {
     catch { return $false }
     finally { $client.Dispose() }
 }
+
+function Get-QodexSystemProxy {
+    # Read only: never change Windows settings or the supervisor's environment.
+    $settings = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
+    if ($settings.ProxyEnable -ne 1) { return $null }
+    $server = [string]$settings.ProxyServer
+    if ($server -notmatch '^127\.0\.0\.1:([1-9][0-9]{0,4})$' -or [int]$Matches[1] -gt 65535) {
+        throw '当前系统代理格式不受支持；只接受 127.0.0.1:端口 的本机 HTTP 代理。没有重启服务或更改代理。'
+    }
+    return ('http://' + $server)
+}

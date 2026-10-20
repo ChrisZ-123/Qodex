@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import {bridgeHarness} from './audit-bridge-harness.mjs';
 
 const h=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max'},allow:{groups:['456','789','555'],private:['123']}}});
 try{
-  h.chatPreferences.updateConversation('group:456',{voiceEnabled:true},h.chatPreferences.data.revision);
-  h.chatPreferences.updateConversation('group:789',{voiceEnabled:true},h.chatPreferences.data.revision);
-  h.chatPreferences.updateConversation('group:555',{voiceEnabled:true},h.chatPreferences.data.revision);
-  h.chatPreferences.updateConversation('private:123',{voiceEnabled:true},h.chatPreferences.data.revision);
+  assert.equal(h.modelChat.effective('group:456').voiceEnabled,false,'Experimental voice is disabled in public defaults');
+  fs.writeFileSync(path.join(h.temp,'state','chat-expression.json'),JSON.stringify({voiceEnabled:true}));
   h.setVoice('10',{text:'今天晚上一起开黑吗'});
   await h.handleIncoming('group',456,{user_id:998,group_id:456,self_id:111,message_id:10,message:[{type:'record',data:{file:'fixture-record'}}],sender:{nickname:'当前群友'}},h.cfg);
   const direct=JSON.parse(h.calls.prompts.at(-1).content[0].text).messages[0];

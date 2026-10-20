@@ -40,7 +40,7 @@ export class WavesClient{
   async call(route,body){
     if(!this.token)throw Error('鸣潮服务凭据尚未就绪，请通过启动页启动');
     const r=await this.fetchImpl(this.base+route,{method:body===undefined?'GET':'POST',headers:{authorization:`Bearer ${this.token}`,...(body===undefined?{}:{'content-type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(10000)});
-    const data=await r.json().catch(()=>({}));if(!r.ok)throw Error(`鸣潮接口失败（${r.status}）：${safeGameText(data.error||'未返回可读原因')}`);return data;
+    const data=await r.json().catch(()=>({}));if(!r.ok)throw Object.assign(Error(`鸣潮接口失败（${r.status}）：${safeGameText(data.error||'未返回可读原因')}`),{statusCode:[400,409,503].includes(r.status)?r.status:502});return data;
   }
   async execute(scope,command,{isCurrent=()=>true,onStatus=()=>{},images=[]}={}){
     if(!keyOK(scope.key)||!qqOK(scope.senderQQ)||!scope.messageId||!scope.requestId||!isCurrent())throw Error('鸣潮调用来源无效或已取消');
@@ -57,9 +57,10 @@ export class WavesClient{
         if(!isCurrent()){await this.cancel(requestId);throw Error('鸣潮请求已取消');}
         const task=await this.call('/v1/tasks/'+encodeURIComponent(requestId));
         if(task.requestId!==requestId)throw Error('鸣潮结果不属于本轮');
-        onStatus(task.status,Date.now()-started);
-        if(task.status==='completed')return {requestId,elapsedMs:Date.now()-started,outputs:Array.isArray(task.outputs)?task.outputs:[]};
-        if(task.status==='failed'||task.status==='cancelled')throw Error(task.status==='cancelled'?'鸣潮请求已取消':safeGameText(task.error||'鸣潮请求失败'));
+        const operations=Array.isArray(task.operations)?task.operations:[];
+        onStatus(task.status,Date.now()-started,operations);
+        if(task.status==='completed')return {requestId,elapsedMs:Date.now()-started,outputs:Array.isArray(task.outputs)?task.outputs:[],operations:Array.isArray(task.operations)?task.operations:[]};
+        if(task.status==='failed'||task.status==='cancelled')throw Object.assign(Error(task.status==='cancelled'?'鸣潮请求已取消':safeGameText(task.error||'鸣潮请求失败')),{operations});
         if(Date.now()-started>300000){await this.cancel(requestId);throw Error('鸣潮请求超过五分钟，已请求取消；未自动重试');}
         await new Promise(resolve=>setTimeout(resolve,400));
       }
@@ -76,10 +77,11 @@ export class WavesClient{
   }
 }
 // Neither plugin text nor errors may smuggle a login ticket/credential into history.
-export function safeGameText(value){return String(value??'').replace(/https?:\/\/[^\s]*trycloudflare\.com[^\s]*/gi,'[登录入口仅私发本人]').replace(/\b1[3-9]\d{9}\b/g,'[手机号已隐藏]').replace(/((?:cookie|token|authorization|password|验证码|手机号|凭据)\s*[:=：]\s*)\S+/gi,'$1[已隐藏]').slice(0,20000);}
+export function redactWavesLoginLinks(value){return String(value??'').replace(/https?:\/\/[a-z0-9-]+\.trycloudflare\.com\/l\/[^\s<>\])）]+/gi,'[临时登录入口已隐藏]');}
+export function safeGameText(value){return String(value??'').replace(/https?:\/\/[^\s]*trycloudflare\.com[^\s]*/gi,'[临时登录入口已隐藏]').replace(/\b1[3-9]\d{9}\b/g,'[手机号已隐藏]').replace(/((?:cookie|token|authorization|password|验证码|手机号|凭据)\s*[:=：]\s*)\S+/gi,'$1[已隐藏]').slice(0,20000);}
 const mutation=command=>{
   const s=command.replace(/^ww\s*/i,'').trim();
-  if(/^(登录|登陆|绑定账号)$/.test(s))return {type:'login',label:'创建三分钟网页登录入口，链接仅私发你本人'};
+  if(/^(登录|登陆|绑定账号)$/.test(s))return {type:'login',label:'创建三分钟网页登录入口，在发起会话发送；网页登录后核对账号概要，再由原 QQ 确认绑定'};
   if(/^(解绑|删除绑定|注销账号)$/.test(s))return {type:'unbind',label:'删除你自己的鸣潮账号绑定及自动任务'};
   if(s==='签到')return {type:'sign',label:'使用你自己的国服鸣潮账号执行本次库街区签到'};
   const sign=s.match(/^(开启|关闭)(自动签到|签到)$/);if(sign)return {type:'subscribe',patch:{signEnabled:sign[1]==='开启'},label:sign[1]+'当前会话的自动签到'};
@@ -93,6 +95,17 @@ export class WavesController{
   sourceEpoch(key){return this.sourceEpochs.get(key)??0;}
   retainedOriginCurrent(p){return p.sourceEpoch===this.sourceEpoch(p.key)&&this.valid(p);}
   retainedCurrent(p){return p.expiresAt>Date.now()&&this.retainedOriginCurrent(p);}
+  async cancelLogin(binding){
+    try{await this.client.call('/v1/login/cancel',{requestId:binding.requestId,key:binding.key,senderQQ:binding.senderQQ});}
+    catch(error){this.operationalFailure('login-cancel',error,binding.key);throw Error('登录链接取消未确认，请检查鸣潮服务；未自动重试。');}
+  }
+  async deliverLogin(binding,message,current){
+    if(!current())throw Error('登录通知已取消或会话权限已变化');
+    if(binding.key.startsWith('group:')){
+      const sent=await this.sendNotice(binding.key,binding.senderQQ,message,{isCurrent:current,historyText:safeGameText(message),source:'waves-login'});
+      if(!sent)throw Error('群内登录通知已取消或会话权限已变化');
+    }else await this.sendPrivate(binding.senderQQ,message,current);
+  }
   async syncPolicy(){
     // Recompute when this queued write executes, so a stale caller cannot
     // restore permissions after a later pause/disable. Failures keep the queue usable.
@@ -128,14 +141,18 @@ export class WavesController{
         if(['sign','unbind'].includes(p.type)){const r=await this.client.call('/v1/mutations/prepare',{senderQQ:p.senderQQ,key:p.key,messageId:scope.messageId,action:p.type});p.serverRequestId=r.requestId;}
         if(!this.retainedCurrent(p)||!this.scopeCurrent(scope))throw Error('鸣潮请求已取消或会话权限已变化');
         this.pending.set(id,p);this.record(scope,{status:'confirmation'});
-        if(p.type==='login'&&scope.nativeCommand)return {outputs:await this.confirmation(scope,id),requestId:scope.requestId};
-        return {outputs:[{type:'text',text:change.label+'。如确认，请本人发送“ww确认 '+id+'”；三分钟内有效。'}],requestId:scope.requestId,assets:[]};
+        if(scope.nativeCommand===true){
+          const outputs=await this.confirmation(scope,id);
+          if(p.type!=='login')this.record(scope,{status:'completed'});
+          return {outputs,requestId:scope.requestId};
+        }
+        return {outputs:[{type:'text',text:change.label+'。如确认，请本人在原会话发送“ww确认 '+id+'”；三分钟内有效。'}],requestId:scope.requestId,assets:[]};
       }
-      const result=await this.client.execute(scope,command,{isCurrent:()=>this.scopeCurrent(scope),images:this.client.saveInputs(scope,scope.images??[]),onStatus:(status,elapsedMs)=>{this.record(scope,{status,elapsedMs});scope.onStatus?.(status,elapsedMs);}});
+      const result=await this.client.execute(scope,command,{isCurrent:()=>this.scopeCurrent(scope),images:this.client.saveInputs(scope,scope.images??[]),onStatus:(status,elapsedMs,operations=[])=>{this.record(scope,{status,elapsedMs,operations});scope.onStatus?.(status,elapsedMs);}});
       if(!this.scopeCurrent(scope))throw Error('鸣潮结果已取消或会话权限已变化');
       const outputs=this.resultOutputs(scope,result);
-      this.record(scope,{status:'completed',elapsedMs:result.elapsedMs});return {...result,outputs};
-    }catch(error){this.record(scope,{status:'failed',error:this.redact(safeGameText(error.message))});throw error;}
+      this.record(scope,{status:'completed',elapsedMs:result.elapsedMs,operations:result.operations??[]});return {...result,outputs};
+    }catch(error){this.record(scope,{status:'failed',error:this.redact(safeGameText(error.message)),...(error.operations?{operations:error.operations}:{})});throw error;}
   }
   resultOutputs(scope,result){
       if(!this.scopeCurrent(scope))throw Error('鸣潮结果已取消或会话权限已变化');
@@ -149,31 +166,37 @@ export class WavesController{
   async confirmation(scope,id){
     const p=this.pending.get(id),login=this.bindings.get(String(scope.senderQQ));
     if(!p){
-      if(!login||login.requestId!==id||!this.retainedCurrent(login))throw Error('确认已过期或不属于你');
+      if(!login||login.requestId!==id||scope.key!==login.key||!this.retainedCurrent(login))throw Error('确认已过期或不属于你');
       let accepted=false;const current=()=>this.retainedOriginCurrent(login)&&(accepted||login.expiresAt>Date.now())&&(scope.isCurrent?.()??true);scope.gameOriginCurrent=current;
       if(!current())throw Error('确认已取消或会话权限已变化');
       const r=await this.client.call('/v1/login/confirm',{senderQQ:String(scope.senderQQ),requestId:id,accept:true});
       accepted=true;
       if(!current()||this.bindings.get(String(scope.senderQQ))!==login)throw Error('确认已取消或登录请求已变化');
-      this.bindings.delete(String(scope.senderQQ));return [{type:'text',text:'已绑定你的鸣潮账号：'+safeGameText(r.account?.nickname||r.nickname||r.uid||'成功')}];
+      this.bindings.delete(String(scope.senderQQ));this.record({requestId:login.runId||login.requestId,key:login.key,senderQQ:login.senderQQ,command:'ww登录'},{status:'completed'});return [{type:'text',text:'已绑定你的鸣潮账号：'+safeGameText(r.account?.nickname||r.nickname||r.uid||'成功')}];
     }
     let accepted=false;const current=()=>this.retainedOriginCurrent(p)&&(accepted||p.expiresAt>Date.now())&&(scope.isCurrent?.()??true);scope.gameOriginCurrent=current;
-    if(p.senderQQ!==String(scope.senderQQ)||!current())throw Error('确认已过期、会话已暂停或不属于你');
+    if(p.senderQQ!==String(scope.senderQQ)||p.key!==scope.key||!current())throw Error('确认已过期、会话已暂停或不属于你');
     this.pending.delete(id);await this.syncPolicy();
     if(!current())throw Error('确认已取消或会话权限已变化');
     if(p.type==='login'){
       const r=await this.client.call('/v1/login/create',{key:p.key,senderQQ:p.senderQQ,messageId:scope.messageId});
       accepted=true;
-      let u;try{u=new URL(r.url);}catch{throw Error('登录服务未返回有效入口');}if(u.protocol!=='https:'||!u.hostname.endsWith('.trycloudflare.com'))throw Error('登录入口来源无效');
-      const expiresAt=Date.parse(r.expiresAt);if(!Number.isFinite(expiresAt)||expiresAt<=Date.now())throw Error('登录入口有效期无效');
-      const binding={requestId:r.requestId,key:p.key,senderQQ:p.senderQQ,sourceEpoch:p.sourceEpoch,expiresAt};
+      const binding={requestId:r.requestId,runId:scope.requestId,key:p.key,senderQQ:p.senderQQ,sourceEpoch:p.sourceEpoch,expiresAt:Date.parse(r.expiresAt)};
       const originCurrent=current;
-      if(!originCurrent())throw Error('登录请求已取消或会话权限已变化');
-      this.bindings.set(p.senderQQ,binding);
-      const deliveryCurrent=()=>this.bindings.get(p.senderQQ)===binding&&this.retainedCurrent(binding)&&originCurrent();
-      try{await this.sendPrivate(p.senderQQ,'鸣潮账号登录（仅你本人，三分钟有效）：\n'+r.url+'\n完成后等待账号概要，并由你确认绑定。',deliveryCurrent);}
-      catch{if(this.bindings.get(p.senderQQ)===binding)this.bindings.delete(p.senderQQ);throw Error('无法私发登录入口，请先添加机器人为好友，再发 ww登录');}
-      return [{type:'text',text:'登录入口已私发你本人，三分钟有效；登录后需你确认账号概要。'}];
+      try{
+        let u;try{u=new URL(r.url);}catch{throw Error('登录服务未返回有效入口');}if(u.protocol!=='https:'||!u.hostname.endsWith('.trycloudflare.com'))throw Error('登录入口来源无效');
+        if(!Number.isFinite(binding.expiresAt)||binding.expiresAt<=Date.now())throw Error('登录入口有效期无效');
+        if(!originCurrent())throw Error('登录请求已取消或会话权限已变化');
+        this.bindings.set(p.senderQQ,binding);
+        const deliveryCurrent=()=>this.bindings.get(p.senderQQ)===binding&&this.retainedCurrent(binding)&&originCurrent();
+        await this.deliverLogin(binding,'鸣潮账号登录（三分钟有效，请本人使用）：\n'+r.url+'\n网页验证后请核对账号概要，并由 QQ '+p.senderQQ+' 在原会话确认绑定。请只使用自己的登录入口。',deliveryCurrent);
+      }catch(error){
+        if(this.bindings.get(p.senderQQ)===binding)this.bindings.delete(p.senderQQ);
+        await this.cancelLogin(binding);
+        throw Error('登录入口发送失败或已取消：'+safeGameText(error.message)+'；登录入口已失效，未自动重试。');
+      }
+      this.record(scope,{status:'login_pending'});
+      return [{type:'text',text:'登录入口已在发起会话发送，三分钟有效；网页验证后请本人核对账号概要并确认绑定。'}];
     }
     if(['sign','unbind'].includes(p.type)){
       const started=await this.client.call('/v1/mutations/confirm',{senderQQ:p.senderQQ,requestId:p.serverRequestId,accept:true});
@@ -192,13 +215,16 @@ export class WavesController{
     const match=command.match(/^ww\s*确认\s+([\w-]+)\s*$/i);if(!match)return false;
     const pending=this.pending.get(match[1]);if(pending&&pending.type!=='login')return false;
     const p=pending??this.bindings.get(String(scope.senderQQ));if(!p||p.senderQQ&&p.senderQQ!==String(scope.senderQQ))return false;
+    if(scope.key!==p.key)return false;
     if(!this.retainedCurrent(p))return true;
     let confirmed=false;const current=()=>(scope.gameOriginCurrent?.()??this.retainedCurrent(p))&&Boolean(pending||confirmed||this.bindings.get(String(scope.senderQQ))===p);
     try{const result=await this.confirmation(scope,match[1]);confirmed=true;if(current())await this.sendPrivate(String(scope.senderQQ),result.map(x=>x.text).join('\n'),current);}catch(error){if(current())await this.sendPrivate(String(scope.senderQQ),safeGameText(error.message),current);}return true;
   }
   async cancel(scope){
-    if(scope?.key){this.sourceEpochs.set(scope.key,this.sourceEpoch(scope.key)+1);for(const [id,p]of this.pending)if(p.key===scope.key)this.pending.delete(id);for(const [qq,l]of this.bindings)if(l.key===scope.key)this.bindings.delete(qq);}
-    for(const id of scope?.gameRequestIds??[])await this.client.cancel(id);
+    const logins=[];
+    if(scope?.key){this.sourceEpochs.set(scope.key,this.sourceEpoch(scope.key)+1);for(const [id,p]of this.pending)if(p.key===scope.key)this.pending.delete(id);for(const [qq,l]of this.bindings)if(l.key===scope.key){logins.push(l);this.bindings.delete(qq);}}
+    const results=await Promise.allSettled([...logins.map(l=>this.cancelLogin(l)),...[...scope?.gameRequestIds??[]].map(id=>this.client.cancel(id))]);
+    const failure=results.find(r=>r.status==='rejected');if(failure)throw failure.reason;
   }
   async tool(scope,args){
     if(!scope||!args||Object.keys(args).some(k=>!['command','sourceMessageId'].includes(k)))throw Error('鸣潮工具来源无效');
@@ -207,20 +233,24 @@ export class WavesController{
     scope.gameUsed=true;
     if(scope.record)scope.record.gameUsed=true;
     scope.gameAssets??=new Map();scope.gameRequestIds??=new Set();
-    const request={...scope,key:scope.key,senderQQ:String(m.senderQQ),messageId:String(m.messageId),images:[...(m.images??[]),...(m.quotedImages??[])]};
+    const request={...scope,nativeCommand:false,key:scope.key,senderQQ:String(m.senderQQ),messageId:String(m.messageId),images:[...(m.images??[]),...(m.quotedImages??[])]};
     const result=await this.command(request,args.command);const content=[];
     for(const o of result.outputs){if(o.type==='text')content.push({type:'text',text:o.text});else{const asset=request.gameAssets.get(o.id),{bytes,mimeType}=loadWavesAsset(this.root,asset);content.push({type:'text',text:'游戏真实结果图片，发送可选 wavesResultIds='+o.id},{type:'image',data:bytes.toString('base64'),mimeType});}}
     return {content:content.length?content:[{type:'text',text:'鸣潮任务已完成，没有返回可展示内容。'}]};
   }
-  toolDefinition(resolveScope){return {name:'waves_game',description:'调用当前 QQ 会话发送者自己的国服鸣潮功能。command 使用单条原版 ww 指令，优先使用 conversation_context.waves.commands 中已核验的用法；ww帮助 返回原版帮助图。sourceMessageId 必须是本批实际发言的消息 ID。只能读自己的绑定；登录、解绑、签到/自动签到/体力提醒更改必须由本人确认。图片结果使用 wavesResultIds 选择发送。不接受凭据、管理员身份、目标群或文件路径。',inputSchema:{type:'object',properties:{command:{type:'string',maxLength:500},sourceMessageId:{type:'string'}},required:['command','sourceMessageId'],additionalProperties:false},execute:async({threadId,requestId,arguments:args})=>{try{return await this.tool(resolveScope(threadId,requestId),args);}catch(error){return {isError:true,content:[{type:'text',text:this.redact(safeGameText(error.message))+'；未自动重试。'}]};}}};}
+  toolDefinition(resolveScope){return {name:'waves_game',description:'调用当前 QQ 会话实际发言者自己的国服鸣潮功能。command 仅用一条实际目录中的 ww 指令，sourceMessageId 必须属于本批该发送者真实发言。自然语言请求的登录、签到、解绑和自动任务变更返回确认步骤，由本人在原 QQ 会话确认；模型不能代发确认，也不能把引用/转发作为授权。网页登录后核对账号概要，再由原 QQ 确认绑定。图片结果使用协议2 wavesImage 动作与真实资源编号。不接收凭据、目标群、管理员身份或文件路径。',inputSchema:{type:'object',properties:{command:{type:'string',maxLength:500},sourceMessageId:{type:'string'}},required:['command','sourceMessageId'],additionalProperties:false},execute:async({threadId,requestId,arguments:args})=>{try{return await this.tool(resolveScope(threadId,requestId),args);}catch(error){return {isError:true,content:[{type:'text',text:this.redact(safeGameText(error.message))+'；未自动重试。'}]};}}};}
   async poll(){
     await this.syncPolicy();
     this.serviceStatus=await this.client.call('/v1/status');
     for(const [qq,l]of this.bindings){
-      if(!this.retainedCurrent(l)){this.bindings.delete(qq);continue;}
+      if(!this.retainedCurrent(l)){this.record({requestId:l.runId||l.requestId,key:l.key,senderQQ:qq,command:'ww登录'},{status:l.expiresAt<=Date.now()?'expired':'cancelled'});this.bindings.delete(qq);try{await this.cancelLogin(l);}catch{}continue;}
       try{const r=await this.client.call('/v1/login/pending?senderQQ='+qq);
         const current=()=>this.bindings.get(qq)===l&&this.retainedCurrent(l);
-        if(r.status==='awaiting_confirmation'&&r.requestId===l.requestId&&!l.notified&&current()){const a=r.account??{};l.notified=true;await this.sendPrivate(qq,'请核对鸣潮账号：'+safeGameText(a.nickname||'')+' / UID '+safeGameText(a.uid||'未知')+'\n如正确，请发送“ww确认 '+l.requestId+'”。',current);}
+        if(r.status==='awaiting_confirmation'&&r.requestId===l.requestId&&!l.notified&&current()){
+          const a=r.account??{};l.notified=true;
+          this.record({requestId:l.runId||l.requestId,key:l.key,senderQQ:qq,command:'ww登录'},{status:'confirmation'});
+          await this.deliverLogin(l,'请核对鸣潮账号：'+safeGameText(a.nickname||'')+' / UID '+safeGameText(a.uid||'未知')+'\n如正确，请本人在原会话发送“ww确认 '+l.requestId+'”。',current);
+        }
       }catch(error){this.operationalFailure('login-summary',error,l.key);}
     }
     const result=await this.client.call('/v1/notices');

@@ -17,9 +17,9 @@ export class CodexApiClient {
     this.live=new Set();this.active=new Map();this.queues=new Map();this.frames=[];this.tools=new Map();this.cancelled=new Set();
     this.imageQueue=[];this.imageActive=null;this.imageJobs=new Map();
     this.rpc=new CodexRpc({exe:config.exe,cwd:root,onNotification:(m,p)=>this.notify(m,p),onRequest:(m,p)=>this.toolCall(m,p)});
-    this.ready=this.initialize();
+    this.beginInitialization();
     this.events={follow:()=>{},mux:()=>this.mux()};
-    this.settings={describe:async()=>{await this.ready;if(this.rpc.closed)throw new Error('Codex process stopped');return ok({namespaces:[{ns:'qq-mode',value:read(path.join(root,'state/mode.json'),{mode:'reserved2'})}]});},update:async({ns,patch})=>{
+    this.settings={describe:async()=>{await this.ensureInitialized();if(this.rpc.closed)throw new Error('Codex process stopped');return ok({namespaces:[{ns:'qq-mode',value:read(path.join(root,'state/mode.json'),{mode:'reserved2'})}]});},update:async({ns,patch})=>{
       if(ns!=='qq-mode'||patch.mode==='closed-agent')throw new Error('Codex backend only permits safe chat modes');
       const p=path.join(root,'state/mode.json');fs.writeFileSync(p,JSON.stringify({...read(p,{}),...patch},null,2));return ok({});
     }};
@@ -29,8 +29,25 @@ export class CodexApiClient {
     }};
     this.sessions={create:p=>this.create(p),selectModel:p=>this.selectModel(p),prompt:p=>this.prompt(p),list:async()=>ok({items:Object.keys(this.records).map(sessionId=>({sessionId,cwd:this.agentCwd()}))})};
   }
+  beginInitialization(){
+    this.initializationState='starting';this.initializationError=null;
+    this.ready=this.initialize();
+    this.ready.then(()=>{this.initializationState='ready';},error=>{
+      this.initializationState='failed';this.initializationError=error;
+    });
+    return this.ready;
+  }
+  ensureInitialized(){
+    // The existing health watcher owns recovery. Re-read startup routing only;
+    // never repeat model turns, change the selected model, or recreate a process.
+    if(this.initializationState==='failed'&&!this.rpc.closed&&['workspace routing discovery failed','workspace routing discovery timed out'].includes(this.initializationError?.message)){
+      console.error('[codex] Connection check is retrying startup routing discovery; no message replay');
+      this.beginInitialization();
+    }
+    return this.ready;
+  }
   async initialize() {
-    await this.rpc.initialize();
+    if(!this.rpcInitialized){await this.rpc.initialize();this.rpcInitialized=true;}
     const account=await this.rpc.request('account/read',{});
     if(account.account?.type!=='chatgpt')throw new Error('机器人独立 Codex 尚未登录，请使用启动页的登录 Codex 入口');
     const models=await this.readModelCatalog();

@@ -127,7 +127,7 @@ try {
     $secrets = [pscustomobject]@{onebot='fixture-onebot';console=(New-QodexToken);control=(New-QodexToken)}
     Write-QodexInitialization $fixtureRoot $config $secrets
     $launcherCheck = Invoke-FixtureScript (Join-Path $fixtureRoot 'scripts\windows\Launcher.ps1') 'ValidateOnly'
-    Assert ($launcherCheck.code -eq 0 -and $launcherCheck.out -match '11 actions') ("Launcher validation failed: " + $launcherCheck.err)
+    Assert ($launcherCheck.code -eq 0 -and $launcherCheck.out -match '12 actions') ("Launcher validation failed: " + $launcherCheck.err)
     $encrypted = Get-Content -LiteralPath (Join-Path $fixtureRoot 'state\secrets.dpapi') -Raw
     $plainConfig = Get-Content -LiteralPath (Join-Path $fixtureRoot 'config.json') -Raw
     Assert ($encrypted -notmatch 'fixture-onebot' -and $plainConfig -notmatch 'fixture-onebot' -and $plainConfig -notmatch [regex]::Escape($secrets.control)) 'A secret leaked to config or DPAPI ciphertext.'

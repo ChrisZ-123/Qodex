@@ -8,15 +8,16 @@ import {ModelChat} from '../src/model-chat.js';
 import {CodexApiClient} from '../src/codex-client.js';
 import {ChatMemory} from '../src/chat-memory.js';
 import {bridgeHarness} from './audit-bridge-harness.mjs';
+import {modelOutput} from './model-output-fixture.mjs';
 
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'qodex-waves-test-'));
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64');
 const tick=()=>new Promise(r=>setTimeout(r,20));
 try{
  const settings=new WavesSettings(path.join(root,'settings.json'));
- assert.equal(settings.enabled('group:1'),false);settings.restore({version:1,enabled:true,conversations:{}});
+ assert.equal(settings.enabled('group:1'),false,'The optional game module defaults off');settings.update({enabled:true,revision:0});
  assert(settings.enabled('group:1'));settings.update({key:'group:1',enabled:false,revision:1});assert(!settings.enabled('group:1'));assert(settings.enabled('group:2'));
- assert.throws(()=>settings.update({enabled:true,revision:0}),/已变化/);settings.update({key:'group:1',enabled:null,revision:2});assert(settings.enabled('group:1'));
+ assert.throws(()=>settings.update({enabled:true,revision:1}),/已变化/);settings.update({key:'group:1',enabled:null,revision:2});assert(settings.enabled('group:1'));
  assert.throws(()=>validateWavesSettings({version:1,enabled:true,conversations:{'../private':true}}),/无效/);
  const requests=[];let reads=0;
  const client=new WavesClient({root,token:'fixture',fetchImpl:async(url,options)=>{requests.push({url,options});let result={};if(url.includes('/tasks/'))result={requestId:JSON.parse(requests.find(x=>x.url.endsWith('/execute')).options.body).requestId,status:++reads===1?'running':'completed',outputs:reads===1?[{type:'text',text:'处理中'}]:[{type:'text',text:'真实最终结果'}]};return {ok:true,json:async()=>result};}});
@@ -29,10 +30,10 @@ try{
  await assert.rejects(cancelled.execute({...scope},'ww帮助',{isCurrent:()=>current}),/取消/);assert.equal(cancels,1);
  fs.mkdirSync(path.join(root,'results'));fs.writeFileSync(path.join(root,'results','good.png'),png);fs.writeFileSync(path.join(root,'outside.png'),png);
  assert.equal(loadWavesAsset(root,{path:path.join(root,'results','good.png')}).mimeType,'image/png');assert.throws(()=>loadWavesAsset(root,{path:path.join(root,'outside.png')}),/越界/);
- let paused=false;const calls=[],privateSent=[];
+ let paused=false;const calls=[],privateSent=[],groupSent=[];
  fs.mkdirSync(path.join(root,'results','fixture-task'));fs.writeFileSync(path.join(root,'results','fixture-task','good.png'),png);
  const fake={root,call:async(route,body)=>{calls.push([route,body]);if(route==='/v1/login/create')return {requestId:'login-fixture',url:'https://example.trycloudflare.com/l/fixture',expiresAt:new Date(Date.now()+180000).toISOString()};if(route==='/v1/mutations/prepare')return {requestId:'mutation-fixture'};return {};},saveInputs:()=>[],execute:async(s)=>({requestId:'fixture-task',outputs:[{type:'text',text:'面板结果'},{type:'image',id:'native-image',path:path.join(root,'results','fixture-task','good.png')}]}),cancel:async()=>{}};
- const controller=new WavesController({root,settings,client:fake,allowed:k=>['group:1','group:2'].includes(k),paused:()=>paused,keys:()=>['group:1','group:2'],sendPrivate:async(q,text)=>privateSent.push([q,text]),sendNotice:async()=>true});
+ const controller=new WavesController({root,settings,client:fake,allowed:k=>['group:1','group:2'].includes(k),paused:()=>paused,keys:()=>['group:1','group:2'],sendPrivate:async(q,text)=>privateSent.push([q,text]),sendNotice:async(k,q,text,options)=>{assert(options.isCurrent());groupSent.push([k,q,text]);return true;}});
  const run={...scope,batch:[{senderQQ:'111',messageId:'100',text:'帮我看鸣潮面板'}],gameAssets:new Map(),gameRequestIds:new Set()};
  const tool=await controller.tool(run,{command:'ww面板',sourceMessageId:'100'});assert(tool.content.some(x=>x.type==='image'));assert.equal(run.gameAssets.size,1);
  await assert.rejects(controller.tool(run,{command:'ww面板',sourceMessageId:'foreign'}),/真实发送者/);
@@ -40,10 +41,11 @@ try{
  await assert.rejects(controller.tool(run,{command:'ww确认 something',sourceMessageId:'100'}),/代替确认/);
  await assert.rejects(controller.query(run,'ww添加ck secret-token'),/凭据/);
  paused=true;await assert.rejects(controller.tool(run,{command:'ww面板',sourceMessageId:'100'}),/暂停/);paused=false;
- const subscribe=await controller.query(run,'ww开启体力提醒 180');const pending=[...controller.pending.values()].at(-1);assert(subscribe.outputs[0].text.includes('本人'));assert(!calls.some(x=>x[0]==='/v1/subscriptions'));
+ const subscribe=await controller.query(run,'ww开启体力提醒 180');assert(subscribe.outputs[0].text.includes('ww确认'));assert(!calls.some(x=>x[0]==='/v1/subscriptions'));assert.equal(controller.pending.size,1);
+ const pending=controller.pending.values().next().value;
  await assert.rejects(controller.confirmation({...scope,senderQQ:'222'},pending.id),/不属于你/);
  await controller.confirmation(scope,pending.id);assert.deepEqual(calls.find(x=>x[0]==='/v1/subscriptions')[1],{senderQQ:'111',key:'group:1',reminderEnabled:true,threshold:180});
- await controller.query({...run,nativeCommand:true},'ww登录');assert.equal(privateSent[0][0],'111');assert(privateSent[0][1].includes('/l/'));assert(!JSON.stringify(controller.runs).includes('/l/'));
+ await controller.query({...run,nativeCommand:true},'ww登录');assert.equal(privateSent.length,0);assert.equal(groupSent[0][0],'group:1');assert.equal(groupSent[0][1],'111');assert(groupSent[0][2].includes('/l/'));assert(!JSON.stringify(controller.runs).includes('/l/'));
  assert(!JSON.stringify(settings.export()).includes('fixture'));
 
  // The real conversation queue gives a ww job exclusive routing, with later text kept.
@@ -71,12 +73,12 @@ try{
  assert.equal(migratedContext.longTermMemory.entries[0].id,migrationNote.entries[0].id);assert.equal(chat.memory.read('group:4').entries[0].text,'migration fixture preference');
  assert.equal(e.messages.length,130,'All local history survives migration');assert(e.messages.some(m=>m.text==='before-reset-0'));assert(e.messages.some(m=>m.contextExcluded));
  await chat.reset('group:4');chat.memory=new ChatMemory(path.join(root,'memory'));await chat.receive('group:4',{sender:'玩家',senderQQ:'111',text:'图片查询',messageId:'401'});const imageRun=chat.running.get('group:4'),assetId=crypto.randomUUID();imageRun.gameAssets.set(assetId,{id:assetId,key:'group:4',runId:imageRun.id,path:path.join(root,'results','good.png')});let imagesSent=0;chat.sendGameImage=async()=>{imagesSent++;return {messageId:'402'};};
- imageRun.text=JSON.stringify({reply:'',memoryOps:[],wavesResultIds:[assetId],stickerIds:[],stickerNotes:[],imagePrompt:'',replyTo:null});await chat.consume(imageRun.sessionId,{type:'turn/end',data:{requestId:imageRun.id,reason:{kind:'completed'}}});assert.equal(imagesSent,1);assert(chat.history('group:4').messages.some(m=>m.wavesImageId===assetId));
- const codex=Object.create(CodexApiClient.prototype);Object.assign(codex,{config:{conversationMode:'model'},records:{own:{toolGeneration:'waves-v1'}},active:new Map([['own','new-turn']]),tools:new Map(),cancelled:new Set(),pendingRequestIds:new Map([['own','request']]),frames:[]});let bound;
- codex.installApplicationTools([{name:'waves_game',execute:async p=>{bound=p;return {content:[{type:'text',text:'ok'}]};}}],'waves-v1');await codex.toolCall('item/tool/call',{threadId:'own',turnId:'new-turn',tool:'waves_game',arguments:{command:'ww帮助',sourceMessageId:'9'}});assert.equal(bound.requestId,'request');await assert.rejects(codex.toolCall('item/tool/call',{threadId:'own',turnId:'old-turn',tool:'waves_game'}),/obsolete/);
+ imageRun.text=JSON.stringify(modelOutput({wavesResultIds:[assetId]}));await chat.consume(imageRun.sessionId,{type:'turn/end',data:{requestId:imageRun.id,reason:{kind:'completed'}}});assert.equal(imagesSent,1);assert(chat.history('group:4').messages.some(m=>m.wavesImageId===assetId));
+ const codex=Object.create(CodexApiClient.prototype);Object.assign(codex,{config:{conversationMode:'model'},records:{own:{}},active:new Map([['own','new-turn']]),tools:new Map(),cancelled:new Set(),pendingRequestIds:new Map([['own','request']]),frames:[]});let bound;
+ codex.installApplicationTools([{name:'waves_game',execute:async p=>{bound=p;return {content:[{type:'text',text:'ok'}]};}}],'waves-v1');await assert.rejects(codex.toolCall('item/tool/call',{threadId:'own',turnId:'new-turn',tool:'waves_game',arguments:{command:'ww帮助',sourceMessageId:'9'}}),/not enabled/);assert.equal(bound,undefined);codex.records.own.toolGeneration=codex.toolGeneration;await codex.toolCall('item/tool/call',{threadId:'own',turnId:'new-turn',tool:'waves_game',arguments:{command:'ww帮助',sourceMessageId:'9'}});assert.equal(bound.requestId,'request');await assert.rejects(codex.toolCall('item/tool/call',{threadId:'own',turnId:'old-turn',tool:'waves_game'}),/obsolete/);
 
  const h=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max'},sendDelayMs:0}});try{
-  h.wavesSettings.restore({version:1,enabled:true,conversations:{}});
+  assert.equal(h.wavesSettings.enabled('group:456'),false);h.wavesSettings.update({enabled:true,revision:0});
   h.waves.command=async()=>({outputs:[{type:'text',text:'帮助结果'}]});await h.handleIncoming('group',456,{user_id:998,message_id:'900',self_id:111,sender:{nickname:'玩家'},message:[{type:'text',data:{text:'ww帮助'}}]},h.cfg);assert.equal(h.calls.prompts.length,0);assert.equal(h.calls.sent.length,1);
   await h.handleIncoming('group',456,{user_id:998,message_id:'901',self_id:111,message:[{type:'text',data:{text:'ww添加cookie password=fixture-secret'}}]},h.cfg);assert(!JSON.stringify(h.modelChat.history('group:456')).includes('fixture-secret'));
   fs.mkdirSync(path.join(h.temp,'roles'),{recursive:true});const backup=h.chatBackup.export();assert.deepEqual(backup.sections.waves,{version:1,enabled:true,conversations:{}});assert(!JSON.stringify(backup).includes('fixture-secret'));
@@ -91,5 +93,5 @@ try{
    assert.equal((await request('/api/waves/image-preview?key=group%3A456&id=foreign')).status,404);
   }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
  }finally{await h.close();}
- console.log('PASS Waves scope/inheritance, true task completion, native exclusivity, multi-group queues, cancellation, model tool ownership, mutation confirmation, private login, asset boundary/empty-text images, migration rollback bindings and secret-free backup');
+ console.log('PASS Waves scope/inheritance, true task completion, native exclusivity, multi-group queues, cancellation, model tool ownership, mutation confirmation, group login, asset boundary/empty-text images, migration rollback bindings and secret-free backup');
 }finally{assert(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep+'qodex-waves-test-'));fs.rmSync(root,{recursive:true,force:true});}

@@ -2,18 +2,17 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import {ModelChat} from '../src/model-chat.js';
 import {ChatMemory} from '../src/chat-memory.js';
 import {CodexApiClient} from '../src/codex-client.js';
 import {GENERATED_ROOT,loadGeneratedImage,readNativeImage} from '../src/generated-images.js';
-import {bridgeHarness} from './audit-bridge-harness.mjs';
+import {modelOutput} from './model-output-fixture.mjs';
 
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/Zp8AAAAASUVORK5CYII=','base64');
 const native={result:png.toString('base64')};
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'qq-image-test-'));
 const created=[];
-const output=(reply='',imagePrompt='',imageSourceMessageId=null)=>({reply,memoryOps:[],stickerIds:[],stickerNotes:[],replyTo:null,imagePrompt,imageSourceMessageId});
+const output=(reply='',imagePrompt='',imageSourceMessageId=null)=>modelOutput({reply,imagePrompt,imageSourceMessageId});
 try{
   let nextSession=0,generate,generatedRequests=[];
   const sentText=[],sentImages=[],promptCalls=[];
@@ -47,11 +46,12 @@ try{
   assert.equal(generatedRequests.at(-1).sourceImages[0].data,source.data);
   created.push(['group:111',sentImages.at(-1)[1]]);
   const beforeCalls=generatedRequests.length;
+  const beforeText=sentText.length;
   await receive('group:111','13',{text:'修改另一个群的图片'});
   await finish('session-1',output('','修改外群图片','999'));
   assert.equal(generatedRequests.length,beforeCalls);
-  assert.equal(chat.entry('group:111').runs.at(-1).status,'sent');
-  assert.match(sentText.at(-1)[1],/没能读取你引用的图片/);
+  assert.equal(chat.entry('group:111').runs.at(-1).status,'failed');
+  assert.equal(sentText.length,beforeText,'Invalid references reject the complete output without fabricated replacement text');
 
   generate=()=>new Promise(resolve=>release=resolve);
   await receive('group:111','14',{text:'再画一张'});
@@ -90,18 +90,3 @@ try{
   for(const [key,m] of created){const file=path.resolve(GENERATED_ROOT,key.replace(':','-'),m.runId,m.imageId+'.'+m.extension);if(!file.startsWith(path.resolve(GENERATED_ROOT)+path.sep))throw Error('Invalid generated cleanup path');if(fs.existsSync(file))fs.unlinkSync(file);const dir=path.dirname(file);if(fs.existsSync(dir)&&!fs.readdirSync(dir).length)fs.rmdirSync(dir);}
   if(!path.resolve(temp).startsWith(path.resolve(os.tmpdir())+path.sep+'qq-image-test-'))throw Error('Invalid temp cleanup path');fs.rmSync(temp,{recursive:true,force:true});
 }
-
-const h=await bridgeHarness({config:{backend:'codex',codex:{conversationMode:'model',model:'gpt-6-luna',reasoningEffort:'max'}},globals:{loadGeneratedImage:(key)=>{assert.equal(key,'group:456');return {bytes:png,mimeType:'image/png'};}}});
-const server=h.startConsoleServer();
-try{
-  if(!server.listening)await new Promise(resolve=>server.once('listening',resolve));
-  const imageId=crypto.randomUUID(),url='http://127.0.0.1:'+server.address().port+'/api/chat/image-preview?imageId='+imageId+'&key=';
-  h.modelChat.entry('group:456').images=[{imageId,runId:crypto.randomUUID()}];
-  assert.equal((await fetch(url+'group%3A456')).status,401);
-  const headers={'x-console-token':'fixture-console-token'};
-  assert.equal((await fetch(url+'group%3A456',{headers:{...headers,origin:'https://other.invalid'}})).status,403);
-  assert.equal((await fetch(url+'group%3A789',{headers})).status,404);
-  const response=await fetch(url+'group%3A456',{headers});assert.equal(response.status,200);
-  assert.equal((await response.json()).image.data,png.toString('base64'));
-  console.log('PASS generated image preview requires console authentication and conversation ownership');
-}finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await h.close();}

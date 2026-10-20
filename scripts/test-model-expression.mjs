@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {ModelChat} from '../src/model-chat.js';
 import {ChatMemory} from '../src/chat-memory.js';
+import {modelOutput} from './model-output-fixture.mjs';
 const temp=fs.mkdtempSync(path.join(os.tmpdir(),'qq-expression-test-'));
 try{
  const texts=[],stickers=[],calls=[];
@@ -14,11 +15,12 @@ try{
  assert.throws(()=>memory.update('group:1',{content:'长'.repeat(30001),enabled:true,revision:1}));
  const chat=new ModelChat({dir:path.join(temp,'chat'),api,memory,allowed:()=>true,persona:()=>({}),expression:()=>({style:'自然简短',stickers:[{id:'agree',description:'点头赞同'}]}),send:async(k,t,guard,o)=>texts.push({k,t,allowed:guard(),o}),sendSticker:async(k,id,guard,o)=>stickers.push({k,id,allowed:guard(),o})});
  const start=()=>chat.receive('group:1',{sender:'甲',messageId:'-123',text:'赞同吗',time:'now'});
- const done=async output=>{await chat.consume('s',{type:'assistant/message',data:{message:{content:[{type:'text',text:JSON.stringify({memoryOps:[],...output})}]}}});await chat.consume('s',{type:'turn/end',data:{reason:{kind:'completed'}}});};
+ const done=async output=>{await chat.consume('s',{type:'assistant/message',data:{message:{content:[{type:'text',text:JSON.stringify(modelOutput(output))}]}}});await chat.consume('s',{type:'turn/end',data:{reason:{kind:'completed'}}});};
  await start();assert.equal(calls[0].context.longTermMemory.content,'');assert.equal(calls[0].context.expression.style,'自然简短');
  await done({reply:'',stickerIds:['agree'],replyTo:'-123'});assert.equal(texts.length,0);assert.equal(stickers[0].o.replyTo,'-123');assert.equal(stickers[0].k,'group:1');
  await start();await done({reply:'赞同',stickerIds:['agree'],replyTo:'-123'});assert.equal(texts[0].o.replyTo,'-123');assert.equal(stickers[1].o.replyTo,null);
- await start();await done({reply:'正常回答',stickerIds:['unknown'],replyTo:'999'});assert.equal(stickers.length,2);assert.equal(texts.at(-1).o.replyTo,null);
+ await start();await done({reply:'正常回答',stickerIds:['unknown'],replyTo:null});assert.equal(stickers.length,2);assert.equal(texts.length,1);assert.equal(chat.entry('group:1').runs.at(-1).status,'failed');
+ await start();await done({reply:'错误引用',stickerIds:[],replyTo:'999'});assert.equal(stickers.length,2);assert.equal(texts.length,1);assert.equal(chat.entry('group:1').runs.at(-1).status,'failed');
  await start();await chat.pause(true);await chat.pause(false);await done({reply:'',stickerIds:['agree'],replyTo:null});assert.equal(stickers.length,2);
  let learned=0;
  chat.expression=async()=>({style:'自然',stickers:[{id:'agree'},{id:'second'}],learningIds:['second'],snapshots:[{id:'second'}],images:[{type:'text',text:'catalogImage:second'},{type:'image',data:'fixture',mediaType:'image/png'}]});

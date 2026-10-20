@@ -2,6 +2,17 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Common.ps1')
 $root = Get-QodexRoot
+if (-not (Test-Path -LiteralPath (Join-Path $root 'config.json') -PathType Leaf) -and -not $ValidateOnly) {
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = Join-Path $PSHOME 'powershell.exe'
+    $info.Arguments = '-NoProfile -ExecutionPolicy Bypass -STA -File "' + (Join-Path $PSScriptRoot 'Install.ps1') + '" -PauseOnError'
+    $info.WorkingDirectory = $root
+    $info.UseShellExecute = $true
+    $info.WindowStyle = [Diagnostics.ProcessWindowStyle]::Normal
+    $process = [Diagnostics.Process]::Start($info)
+    if ($process) { $process.Dispose() }
+    exit 0
+}
 $config = Read-QodexConfig $root
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -69,13 +80,13 @@ function Start-ControlAction([string]$Action) {
     $script:worker = [Diagnostics.Process]::Start($info)
     $script:workerAction = $Action
     foreach ($button in $script:buttons) { $button.Enabled = $false }
-    $script:outputBox.Text = '正在执行，请稍候……'
+    $script:outputBox.Text = if ($Action -eq 'RepairCodex') { '正在修复 Codex 连接，最多约一分钟。当前回复会中止；保留登录、历史和记忆，旧消息不会重新发送。' } else { '正在执行，请稍候……' }
 }
 
 $entries = @(
     @('启动 Qodex', 'Start'), @('停止 Qodex', 'Stop'), @('检查状态', 'Status'), @('验证连接', 'Verify'),
     @('打开控制台', 'OpenConsole'), @('打开 SnowLuma', 'OpenSnowLuma'), @('启用登录自启', 'EnableAutoStart'), @('关闭登录自启', 'DisableAutoStart'),
-    @('登录 Codex（独立）', 'LoginCodex'), @('安装 Waves', 'InstallWaves'), @('配置 Waves 远程登录', 'InstallWavesRemote')
+    @('登录 Codex（独立）', 'LoginCodex'), @('安装 Waves', 'InstallWaves'), @('配置 Waves 远程登录', 'InstallWavesRemote'), @('修复 Codex 连接', 'RepairCodex')
 )
 for ($i = 0; $i -lt $entries.Count; $i++) {
     $button = New-Object Windows.Forms.Button
@@ -100,7 +111,11 @@ $timer.Add_Tick({
     $out = $script:worker.StandardOutput.ReadToEnd().Trim()
     $err = $script:worker.StandardError.ReadToEnd().Trim()
     if ($script:worker.ExitCode -eq 0) {
-        if ($script:workerAction -eq 'Stop') {
+        if ($script:workerAction -eq 'RepairCodex') {
+            try { $data = $out | ConvertFrom-Json; $script:outputBox.Text = [string]$data.message }
+            catch { $script:outputBox.Text = $out }
+        }
+        elseif ($script:workerAction -eq 'Stop') {
             $script:outputBox.Text = 'Qodex 已停止。'
         }
         elseif ($script:workerAction -in @('Status', 'Verify', 'Start')) {

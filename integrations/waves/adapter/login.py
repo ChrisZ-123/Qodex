@@ -49,12 +49,14 @@ class LoginTicket:
     sms_attempts: int = 0
     verify_attempts: int = 0
     lock: asyncio.Lock = dataclass_field(default_factory=asyncio.Lock)
+    expiry_handle: asyncio.TimerHandle | None = dataclass_field(default=None)
 
     def overview(self) -> dict:
         data = {
             "requestId": self.request_id,
             "status": self.status,
             "expiresAt": iso_time(self.expires_at),
+            "targetQQ": self.sender_qq,
         }
         if self.uid and self.nickname:
             data["account"] = {"uid": self.uid, "nickname": self.nickname}
@@ -94,6 +96,18 @@ class LoginManager:
         async with self.commit_lock:
             return self._create(key, sender_qq, message_id)
 
+    async def cancel(self, request_id: str, key: str, sender_qq: str) -> dict:
+        check_scope(key, sender_qq)
+        async with self.commit_lock:
+            login = self._by_id.get(request_id)
+            if login is None:
+                return {"requestId": request_id, "status": "none"}
+            if login.source_key != key or login.sender_qq != sender_qq:
+                raise InvalidInput("login not found for origin")
+            login.status = "cancelled"
+            self.invalidate(login)
+            return {"requestId": request_id, "status": "cancelled"}
+
     def _create(self, key: str, sender_qq: str, message_id: str) -> dict:
         check_scope(key, sender_qq)
         if not self.permitted(key):
@@ -112,6 +126,9 @@ class LoginManager:
         )
         self._by_id[request_id] = login
         self._by_ticket[ticket] = login
+        login.expiry_handle = asyncio.get_running_loop().call_later(
+            180, lambda: asyncio.create_task(self.expire())
+        )
         return {
             "requestId": request_id,
             "expiresAt": iso_time(login.expires_at),
@@ -122,13 +139,11 @@ class LoginManager:
         if self._by_id.get(login.request_id) is not login or not self.permitted(
             login.source_key
         ):
-            login.phone_encrypted = None
-            login.credential_encrypted = None
+            self.invalidate(login)
             raise InvalidInput("login session invalidated")
         if time.time() >= login.expires_at:
             login.status = "expired"
-            login.phone_encrypted = None
-            login.credential_encrypted = None
+            self.invalidate(login)
             raise InvalidInput("login expired")
         return login
 
@@ -141,18 +156,21 @@ class LoginManager:
         if login is None:
             raise InvalidInput("invalid login")
         self._active(login)
+        if login.status == "confirmed":
+            return login
         login.requests += 1
         if login.requests > 100:
             login.status = "expired"
-            login.credential_encrypted = None
-            login.phone_encrypted = None
+            self.invalidate(login)
             raise InvalidInput("login request limit reached")
         return login
 
-    async def request_sms(self, ticket: str, phone: str, captcha: dict) -> None:
+    async def request_sms(self, ticket: str, phone: str, captcha: dict) -> dict:
         login = await self.by_ticket(ticket)
         async with login.lock:
             self._active(login)
+            if login.status in ("confirmed", "awaiting_confirmation"):
+                return login.overview()
             if (
                 login.status not in ("pending", "sms_sent")
                 or not isinstance(phone, str)
@@ -166,11 +184,14 @@ class LoginManager:
             self._active(login)
             login.phone_encrypted = self.store.dpapi.encrypt(phone)
             login.status = "sms_sent"
+            return login.overview()
 
     async def verify_sms(self, ticket: str, code: str) -> dict:
         login = await self.by_ticket(ticket)
         async with login.lock:
             self._active(login)
+            if login.status in ("confirmed", "awaiting_confirmation"):
+                return login.overview()
             if (
                 login.status != "sms_sent"
                 or not login.phone_encrypted
@@ -183,20 +204,21 @@ class LoginManager:
                 raise InvalidInput("verification request limit reached")
             phone = self.store.dpapi.decrypt(login.phone_encrypted)
             uid, nickname, credential = await self.provider.verify_sms(phone, code)
-            self._active(login)
-            login.phone_encrypted = None
-            login.credential_encrypted = self.store.dpapi.encrypt(credential)
-            login.uid = str(uid)
-            login.nickname = str(nickname)[:100]
-            login.status = "awaiting_confirmation"
-            return login.overview()
+            async with self.commit_lock:
+                self._active(login)
+                login.phone_encrypted = None
+                login.credential_encrypted = self.store.dpapi.encrypt(credential)
+                login.uid = str(uid)
+                login.nickname = str(nickname)[:100]
+                login.status = "awaiting_confirmation"
+                return login.overview()
 
     async def pending(self, sender_qq: str) -> dict:
         async with self.commit_lock:
             return self._pending(sender_qq)
 
     def _pending(self, sender_qq: str) -> dict:
-        for login in self._by_id.values():
+        for login in list(self._by_id.values()):
             if login.sender_qq == sender_qq:
                 try:
                     self._active(login)
@@ -211,40 +233,65 @@ class LoginManager:
             raise InvalidInput("login not found for sender")
         async with login.lock, self.commit_lock:
             self._active(login)
+            if login.status == "confirmed" and accept:
+                return login.overview()
             if login.status != "awaiting_confirmation":
                 raise InvalidInput("login is not awaiting confirmation")
             if accept:
-                if (
-                    not login.credential_encrypted
-                    or not login.uid
-                    or not login.nickname
-                ):
-                    raise InvalidInput("login has no verified credential")
-                credential = self.store.dpapi.decrypt(login.credential_encrypted)
-                if self.on_bind:
-                    await self.on_bind(
-                        login, credential, self.store, lambda: self._active(login)
-                    )
-                else:
-                    self.store.bind(sender_qq, login.uid, login.nickname, credential)
-                login.status = "confirmed"
+                return await self._commit_binding(login)
             else:
                 login.status = "rejected"
-            login.credential_encrypted = None
-            login.phone_encrypted = None
-            self._by_ticket.pop(login.ticket, None)
-            self._by_id.pop(login.request_id, None)
+            self.invalidate(login)
             return {
                 "requestId": request_id,
                 "status": login.status,
                 "account": {"uid": login.uid, "nickname": login.nickname},
             }
 
+    async def _commit_binding(self, login: LoginTicket) -> dict:
+        """Caller holds the ticket and commit locks; return only after commit."""
+        try:
+            self._active(login)
+            if (
+                not login.credential_encrypted
+                or not login.uid
+                or not login.nickname
+            ):
+                raise InvalidInput("login has no verified credential")
+            credential = self.store.dpapi.decrypt(login.credential_encrypted)
+            if self.on_bind:
+                await self.on_bind(
+                    login, credential, self.store, lambda: self._active(login)
+                )
+            else:
+                self.store.bind(
+                    login.sender_qq, login.uid, login.nickname, credential
+                )
+            login.status = "confirmed"
+            return login.overview()
+        except BaseException:
+            if login.status not in ("expired", "cancelled"):
+                login.status = "failed"
+            raise
+        finally:
+            login.credential_encrypted = None
+            login.phone_encrypted = None
+
     def invalidate(self, login: LoginTicket) -> None:
         login.credential_encrypted = None
         login.phone_encrypted = None
         self._by_id.pop(login.request_id, None)
         self._by_ticket.pop(login.ticket, None)
+        if login.expiry_handle:
+            login.expiry_handle.cancel()
+            login.expiry_handle = None
+
+    async def expire(self) -> None:
+        async with self.commit_lock:
+            for login in list(self._by_id.values()):
+                if time.time() >= login.expires_at:
+                    login.status = "expired"
+                    self.invalidate(login)
 
     def apply_policy_locked(self) -> None:
         """Caller holds commit_lock while updating the authoritative policy."""

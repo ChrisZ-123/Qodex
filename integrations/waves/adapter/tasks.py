@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from .security import InvalidInput, sanitize_text
+from .security import InvalidInput, SafeOperationError, sanitize_text
 
 
 @dataclass
@@ -29,12 +29,14 @@ class TaskRecord:
     job: asyncio.Task[None] | None = None
     finished: float | None = None
     assets: list[Path] = field(default_factory=list)
+    operations: list[dict[str, Any]] = field(default_factory=list)
 
     def response(self) -> dict[str, Any]:
         value: dict[str, Any] = {
             "requestId": self.request_id,
             "status": self.status,
             "outputs": list(self.outputs),
+            "operations": list(self.operations),
             "elapsedMs": int(
                 ((self.finished or time.monotonic()) - self.started) * 1000
             ),
@@ -139,6 +141,11 @@ class TaskManager:
         except asyncio.CancelledError:
             record.status = "cancelled"
             record.outputs.clear()
+        except SafeOperationError as error:
+            if record.status == "running":
+                record.status = "failed"
+                record.outputs.clear()
+                record.error = str(error)
         except Exception:
             if record.status == "running":
                 record.status = "failed"

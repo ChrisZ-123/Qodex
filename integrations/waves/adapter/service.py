@@ -9,11 +9,12 @@ from pathlib import Path
 
 from aiohttp import web
 
-from .login import LoginManager, iso_time
 from .paths import listener_ports, runtime_root
+from .login import LoginManager
 from .mutations import Mutations
 from .security import (
     InvalidInput,
+    SafeOperationError,
     bearer_valid,
     check_qq,
     check_request_id,
@@ -117,12 +118,15 @@ class WavesService:
         app.add_routes(
             [
                 web.get("/v1/status", self.status),
+                web.get("/v1/authorization", self.authorization_status),
+                web.post("/v1/authorization", self.authorization_update),
                 web.post("/v1/execute", self.execute),
                 web.get("/v1/tasks/{request_id}", self.task),
                 web.post("/v1/cancel", self.cancel),
                 web.get("/v1/accounts", self.accounts),
                 web.post("/v1/binding/delete", self.binding_delete),
                 web.post("/v1/login/create", self.login_create),
+                web.post("/v1/login/cancel", self.login_cancel),
                 web.get("/v1/login/pending", self.login_pending),
                 web.post("/v1/login/confirm", self.login_confirm),
                 web.post("/v1/public-url", self.public_url),
@@ -208,6 +212,33 @@ class WavesService:
             raise web.HTTPNotFound()
         return web.json_response(record.response())
 
+    async def authorization_status(self, request):
+        authorization = getattr(self.runtime, "authorization", None)
+        if authorization is None:
+            raise web.HTTPServiceUnavailable()
+        return web.json_response(authorization.metadata())
+
+    async def authorization_update(self, request):
+        data = await body(request)
+        fields(data, ("revision", "WavesToken", "xwtoken", "shared"), ("revision", "shared"))
+        authorization = getattr(self.runtime, "authorization", None)
+        if authorization is None:
+            raise web.HTTPServiceUnavailable()
+        if type(data["revision"]) is not int or data["revision"] < 0:
+            raise InvalidInput("invalid authorization revision")
+        for field in ("WavesToken", "xwtoken"):
+            if field in data and (not isinstance(data[field], str) or not data[field]):
+                raise InvalidInput("empty credentials must be omitted")
+        if data["revision"] != authorization.revision:
+            return web.json_response({"error": "authorization revision changed"}, status=409)
+        result = authorization.update(
+            WavesToken=data.get("WavesToken"),
+            xwtoken=data.get("xwtoken"),
+            shared=boolean(data["shared"]),
+            expected_revision=data["revision"],
+        )
+        return web.json_response(result)
+
     async def accounts(self, request):
         return web.json_response({"accounts": self.store.list_accounts()})
 
@@ -229,6 +260,16 @@ class WavesService:
     async def login_pending(self, request):
         return web.json_response(
             await self.login.pending(check_qq(request.query.get("senderQQ")))
+        )
+
+    async def login_cancel(self, request):
+        data = await body(request)
+        fields(data, ("requestId", "key", "senderQQ"), ("requestId", "key", "senderQQ"))
+        check_scope(data["key"], data["senderQQ"])
+        return web.json_response(
+            await self.login.cancel(
+                check_request_id(data["requestId"]), data["key"], data["senderQQ"]
+            )
         )
 
     async def login_confirm(self, request):
@@ -380,6 +421,8 @@ class WavesService:
                     if origin and origin != self.login.public_url:
                         raise InvalidInput("origin denied")
                 response = await handler(request)
+            except SafeOperationError as error:
+                response = web.json_response({"error": str(error)}, status=error.http_status)
             except (InvalidInput, web.HTTPException) as error:
                 response = web.json_response(
                     {
@@ -422,23 +465,21 @@ class WavesService:
 
     async def login_status(self, request):
         login = await self.login.by_ticket(request.match_info["ticket"])
-        return web.json_response(
-            {"status": login.status, "expiresAt": iso_time(login.expires_at)}
-        )
+        return web.json_response(login.overview())
 
     async def sms(self, request):
         data = await body(request)
         fields(data, ("phone", "captcha"), ("phone", "captcha"))
-        await self.login.request_sms(
+        result = await self.login.request_sms(
             request.match_info["ticket"], data["phone"], data["captcha"]
         )
-        return web.json_response({"status": "sms_sent"})
+        return web.json_response(result)
 
     async def verify(self, request):
         data = await body(request)
         fields(data, ("code",), ("code",))
         result = await self.login.verify_sms(request.match_info["ticket"], data["code"])
-        return web.json_response({"status": result["status"]})
+        return web.json_response(result)
 
 
 async def main():

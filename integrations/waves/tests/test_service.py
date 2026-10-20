@@ -301,13 +301,13 @@ async def test_login_expiry_wrong_qq_confirmation_url_change(service):
         service.login.confirm(SENDER, created["requestId"], True),
         return_exceptions=True,
     )
-    assert sum(isinstance(result, InvalidInput) for result in results) == 1
+    assert sum(isinstance(result, InvalidInput) for result in results) == 0
     assert (
         sum(
             isinstance(result, dict) and result.get("status") == "confirmed"
             for result in results
         )
-        == 1
+        == 2
     )
     assert created["expiresAt"].endswith("Z")
     assert service.runtime.bind_count == 1

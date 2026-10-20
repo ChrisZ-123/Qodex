@@ -3,19 +3,186 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import importlib
 import inspect
 import json
 import logging
 import re
 import sys
+import time
+import warnings
 from copy import deepcopy
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
+from io import BytesIO
 
 import httpx
 
+from .security import InvalidInput, SafeOperationError, check_scope, sanitize_text
+from .authorization import UpstreamAuthorization
 from .paths import runtime_root
-from .security import InvalidInput, check_scope, sanitize_text
+from .paths import runtime_root
+
+
+def _score_result_image(encoded):
+    """Validate upstream image bytes before any success observation or output."""
+    from PIL import Image
+    from .security import image_signature
+
+    maximum = 20 * 1024 * 1024
+    if not isinstance(encoded, str) or not encoded or len(encoded) > ((maximum + 2) // 3) * 4:
+        raise InvalidInput("invalid upstream score image")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+        if len(data) > maximum or not any(image_signature(data, mime) for mime in ("image/png", "image/jpeg", "image/webp")):
+            raise ValueError("unsupported image")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(data)) as image:
+                if image.format not in {"PNG", "JPEG", "WEBP"}:
+                    raise ValueError("unsupported image")
+                image.verify()
+            with Image.open(BytesIO(data)) as image:
+                image.load()
+    except Exception:
+        raise InvalidInput("invalid upstream score image") from None
+    return data
+
+_REQUEST = ContextVar("waves_native_request", default=None)
+_HTTP_SEND = httpx.AsyncClient.send
+_HTTP_INSTALLED = False
+UPLOADS = {
+    "waves_score_rank": "upload_score",
+    "waves_abyss_record": "upload_abyss",
+    "waves_slash_record": "upload_slash",
+    "waves_matrix_record": "upload_matrix",
+}
+SCORE_HANDLERS = {"score_phantom_handler", "analyze_phantom_handler", "score_role_panel", "score_phantom_rank"}
+
+
+@dataclass
+class RequestContext:
+    runtime: object
+    record: object
+    uid: str | None = None
+    pending: list = field(default_factory=list)
+    children: set = field(default_factory=set)
+    operation: dict | None = None
+    revision: int = 0
+    active: bool = True
+
+    def check(self):
+        if not self.active or self.record.status != "running" or not self.runtime.permitted(self.record.key):
+            raise InvalidInput("conversation paused or operation cancelled")
+
+
+class RequestTasks(set):
+    def add(self, task):
+        super().add(task)
+        context = _REQUEST.get()
+        if context is not None:
+            context.children.add(task)
+
+
+async def _upstream_send(client, request, *args, **kwargs):
+    """Observe actual upstream responses, retaining the task's policy boundary."""
+    host, path = request.url.host, request.url.path
+    service = (
+        "rank" if host == "wh.loping151.site" and path in {
+            "/top/waves/upload", "/top/waves/abyss/upload", "/top/waves/slash/upload", "/top/waves/matrix/upload"
+        } else "score" if host == "scoreecho.loping151.site" and path in {"/score", "/score_zh", "/score_en"} else None
+    )
+    if service is None:
+        return await _HTTP_SEND(client, request, *args, **kwargs)
+    context = _REQUEST.get()
+    if context is None:
+        raise InvalidInput("upstream operation requires a current user task")
+    context.check()
+    if request.url.scheme != "https" or request.url.port not in (None, 443):
+        raise InvalidInput("invalid upstream endpoint")
+    if not context.runtime.authorization.token(service):
+        raise InvalidInput("upstream authorization is not configured")
+    operation = context.operation
+    if operation is None or operation["service"] != service:
+        raise InvalidInput("upstream operation is outside the current task")
+
+    def check_current():
+        try:
+            context.check()
+        except InvalidInput:
+            operation.update(state="cancelled", reason="当前任务已取消或会话已暂停")
+            raise
+        if context.revision != context.runtime.authorization.revision:
+            operation.update(state="cancelled", reason="上游授权已变更，旧请求结果已作废")
+            raise InvalidInput("upstream authorization changed during this task")
+        if not context.runtime.authorization.token(service):
+            operation.update(state="cancelled", reason="上游授权已清除，当前请求已取消")
+            raise InvalidInput("upstream authorization is not configured")
+
+    check_current()
+    if service == "score":
+        if operation.get("attempted"):
+            raise InvalidInput("score task may make only one upstream request")
+        operation["attempted"] = True
+        try:
+            await context.runtime._score_rate(context)
+        except InvalidInput:
+            check_current()
+            raise
+        except asyncio.CancelledError:
+            operation.update(state="cancelled", reason="当前任务已取消")
+            raise
+    try:
+        # Rate limiting yields to configuration/policy changes; the same check also
+        # protects the rank gateway immediately before its transport call.
+        check_current()
+        response = await _HTTP_SEND(client, request, *args, **kwargs)
+        await response.aread()
+        check_current()
+        state = "authorization_failed" if response.status_code in (401, 403) else "service_error"
+        data = None
+        if 200 <= response.status_code < 300:
+            try:
+                data = response.json()
+            except (ValueError, UnicodeDecodeError):
+                pass
+            if isinstance(data, dict):
+                if data.get("code") in (401, 403):
+                    state = "authorization_failed"
+                explicit_ok = data.get("code") in (0, 200) or data.get("success") is True or data.get("status") == "success"
+                if service == "score":
+                    try:
+                        _score_result_image(data.get("result_image_base64"))
+                        explicit_ok = True
+                    except InvalidInput:
+                        explicit_ok = False
+                    character = data.get("matched_character")
+                    if character is not None and (not isinstance(character, str) or not re.fullmatch(r"[\w\u4e00-\u9fff -]{1,80}", character)):
+                        explicit_ok = False
+                if explicit_ok and data.get("success") is not False and data.get("code", 0) in (0, 200):
+                    state = "verified"
+        check_current()
+        if not context.runtime.authorization.observe(service, state, revision=context.revision):
+            operation.update(state="cancelled", reason="上游授权已变更，旧请求结果已作废")
+            raise InvalidInput("upstream authorization changed during this task")
+        operation["state"] = state
+        operation["reason"] = context.runtime.authorization.metadata()[service]["reason"]
+        if state != "verified":
+            # Upstream error bodies may echo credentials; handlers only see fixed text.
+            raise InvalidInput("upstream authorization rejected" if state == "authorization_failed" else "upstream service failed")
+        return response
+    except (httpx.RequestError, httpx.HTTPStatusError):
+        check_current()
+        if not context.runtime.authorization.observe(service, "service_error", revision=context.revision):
+            operation.update(state="cancelled", reason="上游授权已变更，旧请求结果已作废")
+            raise InvalidInput("upstream authorization changed during this task") from None
+        operation.update(state="service_error", reason="上游服务请求失败")
+        raise InvalidInput("upstream service failed") from None
+    except asyncio.CancelledError:
+        operation.update(state="cancelled", reason="当前任务已取消")
+        raise
 
 PLUGIN = "gsuid_core.plugins.XutheringWavesUID.XutheringWavesUID"
 SIGN = "gsuid_core.plugins.RoverSign.RoverSign"
@@ -116,7 +283,8 @@ COMMANDS = [
 
 class NativeRuntime:
     def __init__(self, root: Path | None = None):
-        self.root = root if root is not None else runtime_root()
+        root = root if root is not None else runtime_root()
+        self.root = root
         self.ready = False
         self.login_ready = False
         self.loaded = set()
@@ -126,6 +294,11 @@ class NativeRuntime:
         self.permitted = lambda key: True
         self.sign_time = (8, 0)
         self.score_help = False
+        self.score_module = None
+        self._score_lock = asyncio.Lock()
+        self._score_last = 0.0
+        self._bat_lock = asyncio.Lock()
+        self.authorization = UpstreamAuthorization(root / "data" / "upstream-authorization.dpapi")
 
     async def initialize(self):
         sys.path.insert(0, str(self.root / "core"))
@@ -153,6 +326,7 @@ class NativeRuntime:
             "ResourceUseCNB": False,
         }.items():
             config.WutheringWavesConfig.set_config(key, value)
+        self.authorization.install_provider(config.WutheringWavesConfig, "WavesToken", "rank")
         from gsuid_core.utils.database import base_models as database
 
         await database.init_database()
@@ -196,8 +370,15 @@ class NativeRuntime:
                 f"{SCORE}.scoreecho_config.config"
             ).seconfig
             score_config.set_config("xwtoken", "")
+            self.authorization.install_provider(score_config, "xwtoken", "score")
             importlib.import_module(f"{SCORE}.scoreecho_help")
             self.score_help = True
+            self.score_module = importlib.import_module(f"{SCORE}.scoreecho_score")
+            self.score_module.get_image = self._score_images
+            self.score_module._encode_images = self._score_encode
+            self.score_module._resolve_score_uid = self._score_uid
+            self.score_module._get_bound_uid = self._score_uid
+            self.score_module._MAX_IMAGE_BYTES = 1024 * 1024
         except Exception as error:
             self.errors["ScoreEcho"] = type(error).__name__
         from sqlmodel import SQLModel
@@ -227,8 +408,15 @@ class NativeRuntime:
                         and trigger.func.__name__ == "send_score_help"
                     ):
                         self.triggers.append((sv.priority, trigger))
+                    if module == f"{SCORE}.scoreecho_score" and trigger.func.__name__ in SCORE_HANDLERS:
+                        self.triggers.append((sv.priority, trigger))
         self.triggers.sort(key=lambda item: item[0])
         self.api = importlib.import_module(f"{PLUGIN}.utils.waves_api").waves_api
+        self._install_upload_capture()
+        global _HTTP_INSTALLED
+        if not _HTTP_INSTALLED:
+            httpx.AsyncClient.send = _upstream_send
+            _HTTP_INSTALLED = True
         self.login_ready = True
         self.ready = "help" in self.loaded
         # Upstream error diagnostics can include credential-bearing API objects.
@@ -237,6 +425,7 @@ class NativeRuntime:
         # Registered upstream cron jobs remain inert: start_scheduler is never called.
 
     def status(self):
+        authorization = self.authorization.metadata()
         versions_path = self.root / "versions.json"
         versions = (
             json.loads(versions_path.read_text(encoding="utf-8-sig"))
@@ -286,15 +475,17 @@ class NativeRuntime:
                 {
                     "id": "rank_upload",
                     "label": "总排行上传",
-                    "status": "pending",
-                    "reason": "尚未配置上游排行授权 token，上传已停用",
+                    "status": "ready" if authorization["rank"]["state"] == "verified" else "pending",
+                    "state": authorization["rank"]["state"],
+                    "reason": authorization["rank"]["reason"],
                 },
                 {
                     "id": "scoreecho",
                     "label": "声骸截图评分与分析",
-                    "status": "pending",
-                    "reason": "ScoreEcho 已安装；尚未配置上游 xwtoken，截图上传和评分接口已停用"
-                    if self.score_help
+                    "status": "ready" if self.score_module and authorization["score"]["state"] == "verified" else "pending",
+                    "state": authorization["score"]["state"],
+                    "reason": authorization["score"]["reason"]
+                    if self.score_module
                     else self.errors.get("ScoreEcho", "原生扩展待就绪"),
                 },
                 {
@@ -311,6 +502,7 @@ class NativeRuntime:
             "ready": self.ready,
             "versions": versions,
             "capabilities": capabilities,
+            "authorization": authorization,
             "commands": self.command_catalog() if self.ready else [],
             "error": None if self.ready else "鸣潮原生插件初始化未完成",
         }
@@ -322,7 +514,7 @@ class NativeRuntime:
         for _priority, trigger in self.triggers:
             name = trigger.func.__name__
             examples = (
-                EXAMPLES.get(name, [])
+                ({"score_phantom_handler": ["ww椿4c", "ww椿评分"], "score_role_panel": ["ww分析椿面板"]}.get(name, EXAMPLES.get(name, [])))
                 if trigger.type == "regex"
                 else [
                     trigger.prefix
@@ -349,7 +541,7 @@ class NativeRuntime:
                 category = module.removeprefix("wutheringwaves_")
                 catalog[command] = {
                     "command": command,
-                    "description": DESCRIPTIONS.get(category, name),
+                    "description": "本人声骸截图评分与分析" if module == "scoreecho_score" else DESCRIPTIONS.get(category, name),
                     "handler": name,
                     "module": module,
                     "arguments": trigger.type not in ("fullmatch", "regex"),
@@ -433,7 +625,131 @@ class NativeRuntime:
         if not self.sign_module:
             raise InvalidInput("RoverSign is unavailable")
 
+    def _install_upload_capture(self):
+        queues = importlib.import_module(f"{PLUGIN}.utils.queues.queues")
+        # Preserve the original queue handlers and compiled gateway signing checks.
+        # Only the dispatcher boundary changes: no source-less background upload.
+        queues.dispatcher.emit = self._capture_upload
+        refresh = importlib.import_module(f"{PLUGIN}.utils.refresh_char_detail")
+        refresh._BG_TASKS = RequestTasks(refresh._BG_TASKS)
+
+    def _capture_upload(self, queue, item):
+        context = _REQUEST.get()
+        if context is None or context.runtime is not self or queue not in UPLOADS:
+            return
+        context.check()
+        uid_field = "wavesId" if queue in ("waves_slash_record", "waves_matrix_record") else "waves_id"
+        if not isinstance(item, dict) or not context.uid or str(item.get(uid_field, "")) != context.uid:
+            raise InvalidInput("upload must belong to the sender's own bound UID")
+        if "user_id" in item and str(item["user_id"]) != context.record.sender_qq:
+            raise InvalidInput("upload must belong to the current sender")
+        context.pending.append((queue, deepcopy(item)))
+
+    async def _score_uid(self, event):
+        context = _REQUEST.get()
+        if context is None or event.user_id != context.record.sender_qq:
+            raise InvalidInput("score data requires the current sender")
+        context.check()
+        return context.uid
+
+    async def _score_images(self, event):
+        context = _REQUEST.get()
+        if context is None:
+            raise InvalidInput("score image requires the current user task")
+        context.check()
+        if not context.record.images:
+            raise InvalidInput("请随命令提供当前或引用的声骸截图")
+        values = []
+        from .security import local_image
+        for image in context.record.images:
+            path, _mime = local_image(str(image), self.root / "inputs")
+            data = path.read_bytes()
+            if len(data) > 1024 * 1024:
+                if self.score_module is None:
+                    raise InvalidInput("声骸图片压缩模块尚未就绪")
+                data = await asyncio.to_thread(self.score_module._compress_image, data)
+                context.check()
+            if len(data) > 1024 * 1024:
+                raise InvalidInput("压缩后每张声骸截图不得超过 1 MiB")
+            values.append("base64://" + base64.b64encode(data).decode("ascii"))
+        return values
+
+    async def _score_encode(self, images):
+        result = []
+        for source in images:
+            if not isinstance(source, str) or not source.startswith("base64://"):
+                raise InvalidInput("score accepts only current cached images")
+            if len(base64.b64decode(source[9:], validate=True)) > 1024 * 1024:
+                raise InvalidInput("score image exceeds 1 MiB")
+            result.append(source[9:])
+        return result
+
+    async def _score_rate(self, context):
+        # The upstream README limits requests to 10 per second.
+        async with self._score_lock:
+            context.check()
+            delay = 0.1 - (time.monotonic() - self._score_last)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            context.check()
+            self._score_last = time.monotonic()
+
+    def _operation(self, context, service, kind):
+        operation = {"service": service, "kind": kind, "state": "running", "reason": ""}
+        if not hasattr(context.record, "operations"):
+            context.record.operations = []
+        context.record.operations.append(operation)
+        context.operation = operation
+        context.revision = self.authorization.revision
+        return operation
+
+    async def _flush_uploads(self, context):
+        while context.pending:
+            context.check()
+            queue, item = context.pending.pop(0)
+            operation = self._operation(context, "rank", queue)
+            if not self.authorization.token("rank"):
+                operation.update(state="unconfigured", reason="尚未配置上游排行授权，本次上传未执行")
+                continue
+            try:
+                gateway = importlib.import_module(f"{PLUGIN}.utils.waves_build.upload_gateway")
+                await getattr(gateway, UPLOADS[queue])(item)
+                context.check()
+                if operation["state"] == "running":
+                    # Gateway can swallow errors or reject its signing preflight.
+                    operation.update(state="service_error", reason="原版上传入口未返回可验证的上游结果")
+                    self.authorization.observe("rank", "service_error", revision=context.revision)
+            except asyncio.CancelledError:
+                operation.update(state="cancelled", reason="当前任务已取消")
+                raise
+            except Exception:
+                context.check()
+                if operation["state"] == "running":
+                    operation.update(state="service_error", reason="原版排行上传失败")
+                    self.authorization.observe("rank", "service_error", revision=context.revision)
+            finally:
+                context.operation = None
+
     async def run(self, record, sink):
+        context = RequestContext(self, record)
+        marker = _REQUEST.set(context)
+        try:
+            context.check()
+            models = importlib.import_module(f"{PLUGIN}.utils.database.models")
+            context.uid = await models.WavesBind.get_uid_by_game(record.sender_qq, "onebot")
+            await self._run_handlers(record, sink, context)
+            while context.children:
+                children = tuple(context.children)
+                context.children.clear()
+                await asyncio.gather(*children)
+            await self._flush_uploads(context)
+        finally:
+            context.active = False
+            for child in context.children:
+                child.cancel()
+            _REQUEST.reset(marker)
+
+    async def _run_handlers(self, record, sink, context):
         event = self.event(
             record.command,
             record.sender_qq,
@@ -447,7 +763,20 @@ class NativeRuntime:
             result = await self.sign_module.rover_sign_up_handler(bot, event)
             await bot.send(result)
             return
+        account_prepared = False
+        bat_queries = {
+            f"{PLUGIN}.wutheringwaves_charlist": {"send_char_list_msg_new"},
+            f"{PLUGIN}.wutheringwaves_charinfo": {"send_card_info", "send_one_char_detail_msg"},
+            f"{PLUGIN}.wutheringwaves_abyss": {
+                "send_waves_abyss_info", "send_waves_challenge_info",
+                "send_waves_slash_info", "send_waves_matrix_info",
+            },
+            f"{PLUGIN}.wutheringwaves_stamina": {"send_daily_info_pic"},
+            f"{PLUGIN}.wutheringwaves_roleinfo": {"send_role_info", "send_skin_info", "send_score_info"},
+            f"{PLUGIN}.wutheringwaves_explore": {"send_card_info"},
+        }
         for trigger in self.matching(record.command, event):
+            context.check()
             handler_event = await trigger.get_command(deepcopy(event))
             requested_uid = handler_event.regex_dict.get("waves_id")
             if trigger.func.__module__ == f"{PLUGIN}.wutheringwaves_charlist":
@@ -463,9 +792,36 @@ class NativeRuntime:
                 )
                 if requested_uid != own_uid:
                     raise InvalidInput("only the sender's own bound UID may be queried")
+            if not account_prepared and trigger.func.__name__ in bat_queries.get(trigger.func.__module__, set()):
+                await self._ensure_account_bat(context)
+                account_prepared = True
             bot.ev = handler_event
             # @SV wraps handler exceptions. Unwrap to preserve true completion.
             function = inspect.unwrap(trigger.func)
+            if trigger.func.__module__ == f"{SCORE}.scoreecho_score":
+                if not context.uid:
+                    raise InvalidInput("请先绑定本人的鸣潮 UID")
+                if function.__name__ in {"score_phantom_handler", "analyze_phantom_handler"}:
+                    endpoint = self.score_module.seconfig.get_config("endpoint").data
+                    if endpoint not in {"https://scoreecho.loping151.site/score", "https://scoreecho.loping151.site/score_zh", "https://scoreecho.loping151.site/score_en"}:
+                        raise InvalidInput("评分服务地址不在允许列表")
+                    if not self.authorization.token("score"):
+                        raise InvalidInput("声骸评分服务尚未配置上游授权")
+                    await self._score_images(handler_event)
+                    operation = self._operation(context, "score", function.__name__)
+                    output_start = len(record.outputs)
+                    await function(bot, handler_event)
+                    if operation["state"] == "running":
+                        operation.update(state="service_error", reason="评分请求未返回可验证的上游结果")
+                        self.authorization.observe("score", "service_error", revision=context.revision)
+                    context.operation = None
+                    if operation["state"] != "verified":
+                        raise InvalidInput("声骸评分服务请求未成功")
+                    if not any(output.get("type") == "image" for output in record.outputs[output_start:]):
+                        operation.update(state="service_error", reason="评分处理器未输出有效结果图片")
+                        self.authorization.observe("score", "service_error", revision=context.revision)
+                        raise InvalidInput("声骸评分未生成有效结果图片")
+                    continue
             await function(bot, handler_event)
 
     async def _official(self, path, data, token="", did=None):
@@ -483,17 +839,110 @@ class NativeRuntime:
         }
         if token:
             headers["token"] = token
-        async with httpx.AsyncClient(
-            timeout=20, follow_redirects=False, trust_env=False
-        ) as client:
-            response = await client.post(
-                "https://api.kurobbs.com" + path, data=data, headers=headers
+        if path == "/aki/roleBox/requestToken":
+            headers.update({"did": did, "b-at": ""})
+        stage = {
+            "/user/getSmsCodeForH5": "sms", "/user/sdkLogin": "login",
+            "/gamer/role/list": "roles", "/aki/roleBox/requestToken": "bat",
+        }.get(path, "official")
+        try:
+            async with httpx.AsyncClient(
+                timeout=20, follow_redirects=False, trust_env=False
+            ) as client:
+                response = await client.post(
+                    "https://api.kurobbs.com" + path, data=data, headers=headers
+                )
+                response.raise_for_status()
+                result = response.json()
+        except httpx.TimeoutException:
+            raise SafeOperationError(stage, "timeout") from None
+        except httpx.HTTPStatusError as error:
+            status = error.response.status_code
+            reason = f"http_{status}" if status in (400, 401, 403, 429) else "http_server" if status >= 500 else "http_error"
+            raise SafeOperationError(stage, reason) from None
+        except httpx.RequestError:
+            raise SafeOperationError(stage, "network") from None
+        except (ValueError, UnicodeDecodeError):
+            raise SafeOperationError(stage, "invalid_response") from None
+        if not isinstance(result, dict):
+            raise SafeOperationError(stage, "invalid_response")
+        business_code = result.get("code")
+        if type(business_code) is not int:
+            raise SafeOperationError(stage, "invalid_response")
+        if business_code not in (0, 200):
+            reason = f"code_{business_code}" if business_code in (102, 130, 132, 220, 270, 999, 1000, 10903) else "business_rejected"
+            raise SafeOperationError(stage, reason)
+        value = result.get("data")
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (ValueError, UnicodeDecodeError):
+                pass
+        return value, did
+
+    async def _request_bat(self, uid, token, did, server_id):
+        try:
+            data, _did = await self._official(
+                "/aki/roleBox/requestToken",
+                {"roleId": uid, "serverId": server_id}, token, did,
             )
-            response.raise_for_status()
-            result = response.json()
-        if not isinstance(result, dict) or result.get("code") not in (0, 200):
-            raise InvalidInput("official Kuro request rejected")
-        return result.get("data"), did
+            if not isinstance(data, dict) or not isinstance(data.get("accessToken"), str) or not data["accessToken"]:
+                raise SafeOperationError("bat", "missing_credential")
+            return data["accessToken"]
+        except asyncio.CancelledError:
+            raise
+        except SafeOperationError:
+            raise
+        except Exception:
+            raise SafeOperationError("bat", "request_failed") from None
+
+    async def _ensure_account_bat(self, context):
+        """Prepare missing own-account data tokens before querying, once per account."""
+        if not context.uid or not re.fullmatch(r"1\d{8}", context.uid):
+            return
+        from gsuid_core.utils.database import base_models as database
+        from sqlmodel import select, update
+
+        models = importlib.import_module(f"{PLUGIN}.utils.database.models")
+        async with self._bat_lock:
+            context.check()
+            async with database.async_maker() as session:
+                account = (await session.execute(select(models.WavesUser).where(
+                    models.WavesUser.user_id == context.record.sender_qq,
+                    models.WavesUser.bot_id == "onebot",
+                    models.WavesUser.uid == context.uid,
+                    models.WavesUser.game_id == 3,
+                ))).scalar_one_or_none()
+                if account is None or account.bat:
+                    return
+                if not account.cookie or not account.did or account.status == "无效":
+                    raise SafeOperationError("bat", "credential_incomplete")
+                cookie, did = account.cookie, account.did
+            context.check()
+            bat = await self._request_bat(
+                context.uid, cookie, did, "76402e5b20be2c39f095a152090afddc"
+            )
+            context.check()
+            async with database.async_maker() as session:
+                result = await session.execute(update(models.WavesUser).where(
+                    models.WavesUser.user_id == context.record.sender_qq,
+                    models.WavesUser.bot_id == "onebot",
+                    models.WavesUser.uid == context.uid,
+                    models.WavesUser.game_id == 3,
+                    models.WavesUser.cookie == cookie,
+                    models.WavesUser.did == did,
+                    models.WavesUser.bat == "",
+                    models.WavesUser.status == account.status,
+                    select(models.WavesBind).where(
+                        models.WavesBind.user_id == context.record.sender_qq,
+                        models.WavesBind.bot_id == "onebot",
+                        models.WavesBind.uid == context.uid,
+                    ).exists(),
+                ).values(bat=bat, platform="ios"))
+                if result.rowcount != 1:
+                    raise SafeOperationError("bat", "account_changed")
+                context.check()
+                await session.commit()
 
     async def request_sms(self, phone, captcha):
         allowed = {
@@ -528,13 +977,13 @@ class NativeRuntime:
             or not isinstance(login.get("token"), str)
             or not login["token"]
         ):
-            raise InvalidInput("official login returned no account")
+            raise SafeOperationError("login", "missing_credential")
         token = login["token"]
         roles, _did = await self._official(
             "/gamer/role/list", {"gameId": 3}, token, did
         )
         if not isinstance(roles, list):
-            raise InvalidInput("official login returned no roles")
+            raise SafeOperationError("roles", "invalid_response")
         role = next(
             (
                 item
@@ -546,14 +995,18 @@ class NativeRuntime:
             None,
         )
         if not role:
-            raise InvalidInput("Chinese Waves role required")
+            raise SafeOperationError("roles", "missing_role")
+        uid = str(role["roleId"])
+        server_id = role.get("serverId", "76402e5b20be2c39f095a152090afddc")
+        bat = await self._request_bat(uid, token, did, server_id)
         credentials = {
             "token": token,
             "did": did,
-            "serverId": role.get("serverId", "76402e5b20be2c39f095a152090afddc"),
+            "bat": bat,
+            "serverId": server_id,
         }
         return (
-            str(role["roleId"]),
+            uid,
             sanitize_text(role.get("roleName", "鸣潮玩家"))[:100],
             json.dumps(credentials),
         )
@@ -564,6 +1017,8 @@ class NativeRuntime:
 
         models = importlib.import_module(f"{PLUGIN}.utils.database.models")
         values = json.loads(credential)
+        if not isinstance(values.get("bat"), str) or not values["bat"]:
+            raise SafeOperationError("bat", "missing_credential")
         async with database.async_maker() as session:
             account = (
                 await session.execute(
@@ -579,6 +1034,7 @@ class NativeRuntime:
                     user_id=login.sender_qq, bot_id="onebot", uid=login.uid
                 )
             account.cookie, account.did = values["token"], values["did"]
+            account.bat, account.platform = values["bat"], "ios"
             account.game_id, account.is_login, account.status = 3, True, ""
             account.bbs_sign_switch = "off"
             session.add(account)
@@ -696,12 +1152,22 @@ class CapturedBot:
     async def send(self, message=None, *args, **kwargs):
         from gsuid_core.models import Message
 
+        def safe_text(value):
+            value = str(value)
+            context = _REQUEST.get()
+            if context is not None:
+                for service in ("rank", "score"):
+                    secret = context.runtime.authorization.token(service)
+                    if secret:
+                        value = value.replace(secret, "[credential redacted]")
+            return value
+
         if isinstance(message, (list, tuple)):
             for item in message:
                 await self.send(item)
         elif isinstance(message, Message):
             if message.type in ("text", "markdown"):
-                self.sink.text(message.data)
+                self.sink.text(safe_text(message.data))
             elif message.type == "node":
                 await self.send(message.data)
             elif message.type == "image":
@@ -714,7 +1180,9 @@ class CapturedBot:
                     await self.send(base64.b64decode(value[9:], validate=True))
                 elif isinstance(value, str) and value.startswith("file://"):
                     path = Path(value[7:]).resolve(strict=True)
-                    path.relative_to(Path(__file__).resolve().parents[1])
+                    context = _REQUEST.get()
+                    image_root = context.runtime.root if context is not None else runtime_root()
+                    path.relative_to(image_root.resolve())
                     self.sink.image(path)
                 elif isinstance(value, str) and value.startswith("link://https://"):
                     from urllib.parse import urlsplit
@@ -760,7 +1228,7 @@ class CapturedBot:
         elif hasattr(message, "save"):
             self.sink.image(message)
         elif message is not None:
-            self.sink.text(message)
+            self.sink.text(safe_text(message))
 
     async def send_option(self, reply=None, *args, **kwargs):
         await self.send(reply)

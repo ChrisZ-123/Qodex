@@ -97,3 +97,25 @@ patch_text(
 print(
     "Applied native command-specific priorities and validated local image input bridge"
 )
+
+charlist = (
+    ROOT
+    / "core/gsuid_core/plugins/XutheringWavesUID/XutheringWavesUID/wutheringwaves_charlist/draw_char_list.py"
+)
+patch_text(
+    charlist,
+    "    is_refresh: bool = False,\n    is_peek: bool = False,\n):",
+    "    is_refresh: bool = False,\n    is_peek: bool = False,\n    is_self_ck: bool = False,\n):",
+)
+for indent in (12, 16):
+    patch_text(
+        charlist,
+        "\n" + " " * indent + "await refresh_char(ev, uid, user_id, ck, is_self=is_self)",
+        "\n" + " " * indent + "await refresh_char(ev, uid, user_id, ck, is_self_ck=is_self_ck, is_self=is_self)",
+    )
+patch_text(
+    charlist,
+    "        is_refresh,\n        is_peek,\n    )",
+    "        is_refresh,\n        is_peek,\n        is_self_ck=is_self_ck,\n    )",
+)
+print("Applied verified own-credential propagation for full character list refresh")

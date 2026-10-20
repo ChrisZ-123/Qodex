@@ -21,6 +21,49 @@ class InvalidInput(ValueError):
     pass
 
 
+class SafeOperationError(InvalidInput):
+    """Only adapter-owned fixed messages may cross task and public boundaries."""
+
+    STAGES = {
+        "sms": "官方短信发送失败",
+        "login": "官方验证码登录失败",
+        "roles": "官方角色查询失败",
+        "bat": "鸣潮数据令牌获取失败",
+        "official": "官方请求失败",
+    }
+    REASONS = {
+        "http_400": "HTTP 400，官方拒绝请求",
+        "http_401": "HTTP 401，官方拒绝登录授权",
+        "http_403": "HTTP 403，官方拒绝访问",
+        "http_429": "HTTP 429，请稍后重试",
+        "http_server": "官方服务器暂时不可用",
+        "http_error": "官方 HTTP 请求未成功",
+        "code_102": "官方业务码 102，服务器外部错误",
+        "code_130": "官方业务码 130，验证码错误",
+        "code_132": "官方业务码 132，验证码已过期",
+        "code_220": "官方业务码 220，登录已过期",
+        "code_270": "官方业务码 270，当前网络环境被拒绝",
+        "code_999": "官方业务码 999，服务暂时不可用",
+        "code_1000": "官方业务码 1000，角色查询失败",
+        "code_10903": "官方业务码 10903，数据令牌已失效",
+        "business_rejected": "官方业务请求被拒绝",
+        "timeout": "请求超时，请稍后重试",
+        "network": "网络连接失败，请稍后重试",
+        "invalid_response": "官方响应格式无效",
+        "missing_credential": "官方响应未提供有效票据",
+        "missing_role": "未找到可用的国服鸣潮角色",
+        "credential_incomplete": "本人登录凭据不完整或已过期，请重新登录",
+        "account_changed": "本人登录账户已变更，请重新发起查询",
+        "request_failed": "请求未完成，请稍后重试",
+    }
+
+    def __init__(self, stage: str, reason: str):
+        self.stage = stage
+        self.reason = reason
+        self.http_status = 504 if reason == "timeout" else 400 if reason.startswith("code_") or reason in {"business_rejected", "missing_role", "credential_incomplete", "account_changed"} else 502
+        super().__init__(f"{self.STAGES[stage]}：{self.REASONS[reason]}")
+
+
 def check_qq(value: str) -> str:
     if not isinstance(value, str) or not QQ_RE.fullmatch(value):
         raise InvalidInput("invalid QQ identity")

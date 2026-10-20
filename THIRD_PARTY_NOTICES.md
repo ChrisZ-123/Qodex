@@ -15,7 +15,7 @@ Qodex 依赖或连接以下独立项目：
 
 仓库内继承的素材同样应按其实际来源和授权核查；不要假定代码许可自动覆盖图片、视频或第三方标识。若你发现应补充的来源或权利信息，请按[贡献指南](CONTRIBUTING.md)提出，并给出可核验的依据。
 
-## v0.5.0 可选鸣潮来源
+## v0.6.0 可选鸣潮来源
 
 鸣潮整合基于以下固定提交。安装器从作者/官方源码下载并保留其来源、LICENSE与适用声明；本仓库不捆绑其运行环境、第三方二进制或游戏资源。
 
@@ -27,7 +27,7 @@ Qodex 依赖或连接以下独立项目：
 | [Loping151/RoverReminder](https://github.com/Loping151/RoverReminder) | `05c100179ee33feae54779fea44a131535addb31` | GPL-3.0 |
 | [Loping151/ScoreEcho](https://github.com/Loping151/ScoreEcho) | `9a15321c0c37e56d89cf14d821067ee70508f4b7` | GPL-3.0 |
 
-`integrations/waves` 的 Python 适配器和派生补丁按该目录 GPL-3.0 声明提供，须保留完整许可证、原作者署名和对应源码。**这项范围声明不改变继承 qq-bridge 代码的根目录许可现状，也不宣称整仓 GPL 再授权。** 固定来源与构建/下载步骤见[发布配方](docs/RELEASE_V050.md)。
+`integrations/waves` 的 Python 适配器和派生补丁按该目录 GPL-3.0 声明提供，须保留完整许可证、原作者署名和对应源码。**这项范围声明不改变继承 qq-bridge 代码的根目录许可现状，也不宣称整仓 GPL 再授权。** 固定来源与构建/下载步骤见[发布配方](docs/RELEASE_V060.md)。
 
 ### 当前组合关系与授权范围
 
@@ -36,3 +36,5 @@ Python 适配服务直接导入 gsuid_core 和上述插件；适配器、安装�
 这是对当前实现与发布范围的说明，不能单凭“分进程”推导 GPL 不适用。组合关系与分发义务还取决于实际通信方式、耦合及衍生关系，参阅 [GNU GPL FAQ 关于聚合与组合程序](https://www.gnu.org/licenses/gpl-faq.html#MereAggregation)。本仓库不借此替继承代码添加整仓授权，外部复用仍须核实各部分权利来源。
 
 游戏图片、字体、标识等资源应按作者资源说明与其实际权利来源核实，不假定 GPL 源码许可覆盖全部资产。Python及其依赖、Playwright浏览器、Cloudflare `cloudflared` 等各自适用许可和条款独立保留；cloudflared仅在用户明确启用远程绑定时使用官方来源安装。QQ语音读取依赖SnowLuma与QQ原生转写，不包含另一家识别模型或API。
+
+`Install.bat` / `scripts/windows/Install.ps1` 只引导检查与安装本项目依赖、独立官方登录和配置；不捆绑 QQ、SnowLuma、Codex、Python、浏览器或 cloudflared 二进制，不代用户接受其条款。v0.6.0 延续上表五个固定提交，作者服务授权与玩家凭据不随源码或 JSON 备份发布。

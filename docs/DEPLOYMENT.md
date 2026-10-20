@@ -1,6 +1,6 @@
 # Windows 部署与运行
 
-本指南面向 `qodex-v0.5.0` 预览版。当前支持 Windows 部署；全新安装仍需按下文逐项检查。Qodex 需要本机持续运行，电脑睡眠、关机或断网时不能回复。鸣潮可选且默认关闭，实验性语音默认关闭。
+本指南面向 `qodex-v0.6.0` 预览版。当前支持 Windows 部署；全新安装仍需按下文逐项检查。Qodex 需要本机持续运行，电脑睡眠、关机或断网时不能回复。鸣潮可选且默认关闭，实验性语音默认关闭。
 
 ## 1. 准备依赖
 
@@ -18,10 +18,11 @@
 ```powershell
 git clone https://github.com/ChrisZ-123/Qodex.git
 cd Qodex
-npm ci
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Login-Codex.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1
+git switch --detach qodex-v0.6.0
+.\Install.bat
 ```
+
+`Install.bat` 调用 `scripts/windows/Install.ps1` 中文引导：检查 Node.js 24+、原生 Codex 可执行文件与 SnowLuma 启动器/运行提示；依赖检查通过则跳过安装，否则在临时暂存目录执行 `npm ci --omit=dev`，成功后替换项目依赖；检查独立 Codex 账号，未就绪才进入官方登录；再运行现有 Setup，最后打开启动页。缺少全局软件只显示官方安装渠道，不自动下载。QQ、Codex 和玩家验证仍需人工操作；不提供 EXE 或全无人值守安装。已有部署重跑前须停止服务；已有配置与DPAPI密钥会保留，已就绪登录不重做。需要逐步执行时可直接运行 `npm ci`、`scripts/windows/Login-Codex.ps1`、`Setup.ps1`。
 
 登录脚本调用官方 `codex.exe login`，将登录状态写到本部署的 `state/codex-home`；不会读取或复制桌面端的登录文件。完成后才运行设置向导。也可用 `npm run setup` 调用同一 Windows 向导。若登录失效，先停止本部署，再用启动面板的“登录 Codex（独立）”重新完成官方登录。
 
@@ -29,7 +30,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Setup.ps1
 
 安装向导不会默认覆盖已有配置；再次运行主要用于检查当前安装。白名单默认是空的，`allowAllWhenEmpty=false`，因此配置完成前**不会响应任何群或私聊**。向导要求至少填写一个允许的群或私聊；先只放行你准备试用的目标。若填写 SnowLuma 启动器路径，Qodex 启动时会在 OneBot WebSocket 不可达的情况下尝试启动它；没有填写时仍可自行启动 SnowLuma。
 
-建议从 `gpt-6-luna` / `max` / 标准速度开始。Qodex 启动时会检查独立登录账号可用的模型和推理强度，不会自动降级到别的模型。公开默认生图为“仅明确请求”、表情为“自然适量”；在控制台可关闭或单独调整。主动生图会增加用量。可选 `priority` 速度可能影响与其他 Codex 使用共享的额度，也不保证固定倍率提速。首版记录的本机环境为 Node 24.18.1、`codex-cli 0.155.0-alpha.16` 和 SnowLuma 1.14.17；这不是 v0.5.0 在新机器或未来版本的兼容性承诺。
+从当前账号可用列表选择模型/强度，公开默认标准速度。Qodex 启动时会检查独立登录账号可用的模型和推理强度，不会自动降级到别的模型。公开默认生图为“仅明确请求”、表情为“自然适量”；在控制台可关闭或单独调整。主动生图会增加用量。可选 `priority` 速度可能影响与其他 Codex 使用共享的额度，也不保证固定倍率提速。首版记录的本机环境为 Node 24.18.1、`codex-cli 0.155.0-alpha.16` 和 SnowLuma 1.14.17；这不是 v0.6.0 在新机器或未来版本的兼容性承诺。
 
 ## 3. 启动与检查
 
@@ -46,9 +47,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Control.ps
 
 `Status` 和 `Verify` 用于排查运行中的本机进程与连接状态；控制台默认在 `127.0.0.1:3100`，控制接口默认在 `127.0.0.1:3110`。应先确认 SnowLuma 已连接，再从白名单中的账号或群发送测试消息。模型可判断不接话，因此请同时看控制台的会话历史和 `state/bridge.log`；若启动脚本报错，再看 `logs/windows-supervisor.log`，不要仅以“QQ 没收到回复”判断连接失败。
 
-`Control.ps1` 还接受 `Stop`、`OpenSnowLuma`、`EnableAutoStart` 和 `DisableAutoStart`。`OpenSnowLuma` 只打开 WebUI；若已配置启动器路径且 OneBot WebSocket 尚未就绪，启动 Qodex 时会尝试启动 SnowLuma。自动启动仍受 Windows 用户登录、SnowLuma/QQ 状态与网络影响。关闭控制台网页不会停止后台桥接；需要停止时执行 `-Action Stop`，它也会停止由 Qodex 自动启动的 SnowLuma。全局或当前会话的暂停状态会持久保存；暂停期间消息保留在本机历史中，恢复后从新消息继续。
+`Control.ps1` 还接受 `RepairCodex`、`Stop`、`OpenSnowLuma`、`EnableAutoStart` 和 `DisableAutoStart`。`OpenSnowLuma` 只打开 WebUI；若已配置启动器路径且 OneBot WebSocket 尚未就绪，启动 Qodex 时会尝试启动 SnowLuma。自动启动仍受 Windows 用户登录、SnowLuma/QQ 状态与网络影响。关闭控制台网页不会停止后台桥接；需要停止时执行 `-Action Stop`，它也会停止由 Qodex 自动启动的 SnowLuma。全局或当前会话的暂停状态会持久保存；暂停期间消息保留在本机历史中，恢复后从新消息继续。
 
 若希望 Qodex 同时停止 SnowLuma，请使用保持运行、直接承载程序的启动器。使用 `start` 等方式另开进程后立即退出的第三方批处理可能脱离管理；这类 SnowLuma 与手动启动的实例一样，需要自行关闭。Qodex 不会按进程名称批量结束系统中的其他程序。
+
+## 修复 Codex 连接
+
+启动页“修复 Codex 连接”对应 `Control.ps1 -Action RepairCodex`。它会中止当前回复，校验端口/进程归属后只重启本部署监督的桥接与 Codex 子进程，保留登录、会话、历史、记忆和设置；不重启 SnowLuma、鸣潮或隧道，也不重发失败消息。监督服务未运行时先启动。并发修复合并，停止与修复竞争时不会在停止后重新启动。
+
+修复复用本机鉴权与配置端口，只接纳当前 Windows 用户启用的 `127.0.0.1:端口` HTTP 代理；关闭系统代理时清除新桥接子进程继承的旧代理。它不修改系统代理或其他应用，不支持的格式明确报错。网络不可达、账号过期和模型不可用仍需处理对应原因，不保证重启能解决。
 
 ## 控制台与会话设置
 
@@ -58,7 +65,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Control.ps
 
 先在左侧选中目标群或私聊，再点击“重置当前上下文”并确认。它取消该会话当前及排队回复并放弃旧模型上下文；历史、人格、长期记忆与其他会话不受影响。下一条消息建立新会话，不重新注入重置前历史。已发出的 QQ 消息不会撤回，长期记忆仍会按设置提供给模型。
 
-“条目记忆”支持新增、编辑、置顶、停用及恢复旧版本；置顶条目不会由模型改写。机器人回复下的“多余”“太长”“合适”反馈只作用于本会话后续表达，可在会话设置中撤销。图库可搜索、按学习状态筛选、修改备注，并全局或按会话禁用；禁用不会删除 QQ 收藏。
+全局/当前会话的“回复方式”可选自然回复或单段文字；当前会话可继承。自然回复允许模型排列文字和图片，单段要求模型原生组织，不做输出后拼接。模型列表有加载/失败/刷新状态，不允许保存空选项或静默替换不可用模型。全局人格有统一编辑入口，当前会话通过继承使用它。
+
+“条目记忆”支持事实、人物、共同经历、话题分类及真实 QQ 参与者，话题可标记结束；来源只读。它支持新增、编辑、置顶、停用及恢复旧版本；置顶条目不会由模型改写。机器人回复下的“多余”“太长”“合适”反馈只作用于本会话后续表达，可在会话设置中撤销。图库可搜索、按学习状态筛选、修改备注，并全局或按会话禁用；禁用不会删除 QQ 收藏。
 
 在全局和当前会话设置里，图片生成可设为关闭、仅明确请求或允许模型主动生成；表情可设为自然适量或更活泼。当前会话留空即继承全局。群友引用本会话图片要求改图时，若原图无法取得，Qodex 会提示重新发送，不会用别的图代替。生图每轮最多向 QQ 发送一张，其他群可继续文字聊天。合并转发会在本轮读取，历史可展开已取得的节点与失败说明；OneBot 可能直接返回已展平记录。转发中的旧消息不具备管理权限。
 
@@ -66,7 +75,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Control.ps
 
 ## 升级与备份
 
-从 v0.3.0 升级到 v0.4.0 时，先停止进程，备份**整个旧部署目录及外部记忆目录**，再更新。独立登录和可选原生会话迁移步骤见[v0.4.0 升级与回退指南](UPGRADE_V040.md)。旧 v0.2.0 用户先看[v0.3.0 升级指南](UPGRADE_V030.md)。仅下载控制台 JSON 不能完成整套部署回退；生成图片文件和独立 Codex 登录状态须按本机敏感数据分别保护。若 `git pull --ff-only` 因本地改动或分叉失败，先检查差异；不要强制重置或覆盖本地数据。
+从 v0.5.0 升级到 v0.6.0 时按[v0.6.0 指南](UPGRADE_V060.md)停止并保存完整配套快照；不批量重置线程或强制更换角色。更旧的 v0.3.0 升级到 v0.4.0 时，先停止进程，备份**整个旧部署目录及外部记忆目录**，再更新。独立登录和可选原生会话迁移步骤见[v0.4.0 升级与回退指南](UPGRADE_V040.md)。旧 v0.2.0 用户先看[v0.3.0 升级指南](UPGRADE_V030.md)。仅下载控制台 JSON 不能完成整套部署回退；生成图片文件和独立 Codex 登录状态须按本机敏感数据分别保护。若 `git pull --ff-only` 因本地改动或分叉失败，先检查差异；不要强制重置或覆盖本地数据。
 
 故障定位见[排查指南](TROUBLESHOOTING.md)，配置含义见[配置说明](CONFIGURATION.md)。
 
@@ -80,4 +89,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows\Install-Wa
 
 仅明确需要远程自助绑定时追加 `-RemoteLogin`。安装器从官方/作者来源下载固定提交与资源到本部署 `state/waves`，仓库不携带第三方二进制或游戏素材。完成后重启Qodex加载安全密钥，再在鸣潮分区显式开启游戏开关；`remoteLoginEnabled` 独立控制，公开默认false。RPC8788、登录8789、隧道指标8790须与现有端口不同。
 
-启动面板管理本部署的游戏进程与可选隧道；重复启动与停止归属以状态/验证输出为准，不批量结束其他部署。QQ、Codex仍需各自独立登录。Quick Tunnel是临时开发入口，无可用性保证且域名会变化；不公开控制台、OneBot或RPC。本人绑定与订阅步骤见[鸣潮指南](WAVES.md)。从v0.4升级与完整回退见[v0.5指南](UPGRADE_V050.md)。
+启动面板管理本部署的游戏进程与可选隧道；重复启动与停止归属以状态/验证输出为准，不批量结束其他部署。QQ、Codex仍需各自独立登录。Quick Tunnel是临时开发入口，无可用性保证且域名会变化；不公开控制台、OneBot或RPC。本人绑定与订阅步骤见[鸣潮指南](WAVES.md)。从v0.5升级与完整回退见[v0.6指南](UPGRADE_V060.md)。

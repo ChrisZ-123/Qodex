@@ -63,6 +63,7 @@ function Assert-QodexConfig { param($Config) }
 function Unprotect-QodexSecretObject { param($Root) return @{} }
 function Assert-QodexPort { param($Port,$Name) return $Port }
 function Test-QodexPortOpen { param($Port) return ($env:QODEX_FIXTURE_FAIL -eq 'running') }
+function Read-Host { param($Prompt) if ($env:QODEX_FIXTURE_FAIL -eq 'snowluma') { return 'N' }; return 'Y' }
 '@
     [IO.File]::WriteAllText((Join-Path $fixture 'scripts\windows\Common.ps1'),$common,(New-Object Text.UTF8Encoding($true)))
     $overrides=@'
@@ -78,7 +79,7 @@ function Invoke-QodexInstallScript {
     $original=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Install.ps1') -Raw -Encoding UTF8
     $controlFlow=$original.Replace('$previousExe = $env:QBOT_CODEX_EXE',($overrides + "`n" + '$previousExe = $env:QBOT_CODEX_EXE'))
     [IO.File]::WriteAllText((Join-Path $fixture 'scripts\windows\Install.ps1'),$controlFlow,(New-Object Text.UTF8Encoding($true)))
-    foreach ($case in @('first','repeat','dependencies','Login-Codex.ps1','node','running')) {
+    foreach ($case in @('first','repeat','dependencies','Login-Codex.ps1','node','snowluma','running')) {
         $configPath=Join-Path $fixture 'config.json'
         $flowPath=Join-Path $fixture 'flow.txt'
         Remove-Item -LiteralPath $configPath,$flowPath -Force -ErrorAction SilentlyContinue
@@ -93,7 +94,8 @@ function Invoke-QodexInstallScript {
         $info.EnvironmentVariables['QODEX_FIXTURE_FAIL']=$case
         $process=[Diagnostics.Process]::Start($info)
         try {
-            $process.StandardInput.WriteLine('Y');$process.StandardInput.Close()
+            # The control-flow fixture supplies Read-Host above; CI has no interactive console.
+            $process.StandardInput.Close()
             Assert ($process.WaitForExit(15000)) "Install flow timed out: $case"
             $resultText=$process.StandardOutput.ReadToEnd()+$process.StandardError.ReadToEnd()
             Assert (($process.ExitCode -eq 0) -eq ($case -in @('first','repeat'))) "Unexpected install result for ${case}: $resultText"
